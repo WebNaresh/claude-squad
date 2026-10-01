@@ -48,6 +48,12 @@ func Close() {
 	fmt.Println("wrote logs to " + logFileName)
 }
 
+// CloseQuiet closes the log file without printing (used when cs restarts
+// itself, so no stray text shows between the old and the new screen).
+func CloseQuiet() {
+	_ = globalLogFile.Close()
+}
+
 // Every is used to log at most once every timeout duration.
 type Every struct {
 	timeout time.Duration
