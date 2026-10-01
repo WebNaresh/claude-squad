@@ -5,6 +5,7 @@ import (
 	"claude-squad/session"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -45,6 +46,10 @@ var selectedDescStyle = lipgloss.NewStyle().
 	Background(lipgloss.Color("#dde4f0")).
 	Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#1a1a1a"})
 
+var externalHeaderStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.AdaptiveColor{Light: "#555555", Dark: "#aaaaaa"}).
+	Underline(true)
+
 var mainTitle = lipgloss.NewStyle().
 	Background(lipgloss.Color("62")).
 	Foreground(lipgloss.Color("230"))
@@ -54,11 +59,20 @@ var autoYesStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.Color("#1a1a1a"))
 
 type List struct {
-	items         []*session.Instance
-	selectedIdx   int
-	height, width int
-	renderer      *InstanceRenderer
-	autoyes       bool
+	// all holds every instance across projects; items is the subset shown for
+	// the active project. Indexes (selectedIdx etc.) always refer to items.
+	all     []*session.Instance
+	items   []*session.Instance
+	project string
+	// external holds Claude sessions started outside claude-squad; visible is
+	// the subset in the active project, listed after items. selectedIdx values
+	// at or past len(items) select an external session.
+	external        []*session.ExternalSession
+	visibleExternal []*session.ExternalSession
+	selectedIdx     int
+	height, width   int
+	renderer        *InstanceRenderer
+	autoyes         bool
 
 	// map of repo name to number of instances using it. Used to display the repo name only if there are
 	// multiple repos in play.
@@ -84,7 +98,7 @@ func (l *List) SetSize(width, height int) {
 // SetSessionPreviewSize sets the height and width for the tmux sessions. This makes the stdout line have the correct
 // width and height.
 func (l *List) SetSessionPreviewSize(width, height int) (err error) {
-	for i, item := range l.items {
+	for i, item := range l.all {
 		if !item.Started() || item.Paused() {
 			continue
 		}
@@ -140,6 +154,9 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 
 	// Cut the title if it's too long
 	titleText := i.Title
+	if i.NeedsYou {
+		titleText = "❓ " + titleText
+	}
 	widthAvail := r.width - 3 - runewidth.StringWidth(prefix) - 1
 	if widthAvail > 0 && runewidth.StringWidth(titleText) > widthAvail {
 		titleText = runewidth.Truncate(titleText, widthAvail-3, "...")
@@ -225,6 +242,25 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 	return text
 }
 
+// RenderExternal renders one external session row: its name and whether a
+// terminal is also attached to it.
+func (r *InstanceRenderer) RenderExternal(e *session.ExternalSession, selected bool) string {
+	titleS, descS := titleStyle, listDescStyle
+	if selected {
+		titleS, descS = selectedTitleStyle, selectedDescStyle
+	}
+	title := e.Title()
+	if e.NeedsYou() {
+		title = "❓ " + title
+	}
+	title = runewidth.Truncate(title, max(0, r.width-6), "...")
+	where := e.Describe()
+	return lipgloss.JoinVertical(lipgloss.Left,
+		titleS.Render(lipgloss.Place(r.width-2, 1, lipgloss.Left, lipgloss.Center, " ⧉  "+title)),
+		descS.Render(lipgloss.Place(r.width-2, 1, lipgloss.Left, lipgloss.Center, "    "+where)),
+	)
+}
+
 func (l *List) String() string {
 	const titleText = " Instances "
 	const autoYesText = " auto-yes "
@@ -259,15 +295,25 @@ func (l *List) String() string {
 			b.WriteString("\n\n")
 		}
 	}
+
+	if len(l.visibleExternal) > 0 {
+		b.WriteString("\n\n")
+		b.WriteString(externalHeaderStyle.Render(" Claude sessions "))
+		b.WriteString("\n")
+		for i, e := range l.visibleExternal {
+			b.WriteString("\n")
+			b.WriteString(l.renderer.RenderExternal(e, len(l.items)+i == l.selectedIdx))
+		}
+	}
 	return lipgloss.Place(l.width, l.height, lipgloss.Left, lipgloss.Top, b.String())
 }
 
 // Down selects the next item in the list.
 func (l *List) Down() {
-	if len(l.items) == 0 {
+	if l.total() == 0 {
 		return
 	}
-	if l.selectedIdx < len(l.items)-1 {
+	if l.selectedIdx < l.total()-1 {
 		l.selectedIdx++
 	} else {
 		l.selectedIdx = 0
@@ -276,7 +322,7 @@ func (l *List) Down() {
 
 // Kill selects the next item in the list.
 func (l *List) Kill() {
-	if len(l.items) == 0 {
+	if l.selectedIdx >= len(l.items) {
 		return
 	}
 	targetInstance := l.items[l.selectedIdx]
@@ -299,25 +345,39 @@ func (l *List) Kill() {
 		l.rmRepo(repoName)
 	}
 
+	for i, inst := range l.all {
+		if inst == targetInstance {
+			l.all = append(l.all[:i], l.all[i+1:]...)
+			break
+		}
+	}
 	// Since there's items after this, the selectedIdx can stay the same.
 	l.items = append(l.items[:l.selectedIdx], l.items[l.selectedIdx+1:]...)
 }
 
 func (l *List) Attach() (chan struct{}, error) {
+	if e := l.GetSelectedExternal(); e != nil {
+		return e.Attach()
+	}
 	targetInstance := l.items[l.selectedIdx]
 	return targetInstance.Attach()
 }
 
 // Up selects the prev item in the list.
 func (l *List) Up() {
-	if len(l.items) == 0 {
+	if l.total() == 0 {
 		return
 	}
 	if l.selectedIdx > 0 {
 		l.selectedIdx--
 	} else {
-		l.selectedIdx = len(l.items) - 1
+		l.selectedIdx = l.total() - 1
 	}
+}
+
+// total counts selectable rows: agents plus external sessions.
+func (l *List) total() int {
+	return len(l.items) + len(l.visibleExternal)
 }
 
 func (l *List) addRepo(repo string) {
@@ -342,7 +402,10 @@ func (l *List) rmRepo(repo string) {
 // is started. If the instance was restored from storage or is paused, you can call the finalizer immediately.
 // When creating a new one and entering the name, you want to call the finalizer once the name is done.
 func (l *List) AddInstance(instance *session.Instance) (finalize func()) {
-	l.items = append(l.items, instance)
+	l.all = append(l.all, instance)
+	if InProject(instance, l.project) {
+		l.items = append(l.items, instance)
+	}
 	// The finalizer registers the repo name once the instance is started.
 	return func() {
 		repoName, err := instance.RepoName()
@@ -357,10 +420,92 @@ func (l *List) AddInstance(instance *session.Instance) (finalize func()) {
 
 // GetSelectedInstance returns the currently selected instance
 func (l *List) GetSelectedInstance() *session.Instance {
-	if len(l.items) == 0 {
+	if l.selectedIdx >= len(l.items) {
 		return nil
 	}
 	return l.items[l.selectedIdx]
+}
+
+// Row is one selectable list entry: an agent or an external session.
+type Row struct {
+	Instance *session.Instance
+	External *session.ExternalSession
+}
+
+// VisibleRows returns the rows of the active project in list order.
+func (l *List) VisibleRows() []Row {
+	rows := make([]Row, 0, l.total())
+	for _, inst := range l.items {
+		rows = append(rows, Row{Instance: inst})
+	}
+	for _, e := range l.visibleExternal {
+		rows = append(rows, Row{External: e})
+	}
+	return rows
+}
+
+// SelectedIndex returns the selected row's index in VisibleRows.
+func (l *List) SelectedIndex() int { return l.selectedIdx }
+
+// SelectIndex selects a row by its index in VisibleRows.
+func (l *List) SelectIndex(i int) {
+	if i >= 0 && i < l.total() {
+		l.selectedIdx = i
+	}
+}
+
+// GetSelectedExternal returns the selected external session, or nil when an
+// agent (or nothing) is selected.
+func (l *List) GetSelectedExternal() *session.ExternalSession {
+	i := l.selectedIdx - len(l.items)
+	if i < 0 || i >= len(l.visibleExternal) {
+		return nil
+	}
+	return l.visibleExternal[i]
+}
+
+// SetExternal replaces the external sessions, keeping the same one selected
+// when it still exists.
+func (l *List) SetExternal(sessions []*session.ExternalSession) {
+	var selected string
+	if e := l.GetSelectedExternal(); e != nil {
+		selected = e.Name
+	}
+	l.external = sessions
+	l.filterExternal()
+	for i, e := range l.visibleExternal {
+		if e.Name == selected {
+			l.selectedIdx = len(l.items) + i
+			return
+		}
+	}
+	if l.selectedIdx >= l.total() {
+		l.selectedIdx = max(0, l.total()-1)
+	}
+}
+
+func (l *List) filterExternal() {
+	l.visibleExternal = nil
+	for _, e := range l.external {
+		if inProjectPath(e.Path, l.project) {
+			l.visibleExternal = append(l.visibleExternal, e)
+		}
+	}
+}
+
+// SelectExternal selects the external session with the given name, if listed.
+func (l *List) SelectExternal(name string) {
+	for i, e := range l.visibleExternal {
+		if e.Name == name {
+			l.selectedIdx = len(l.items) + i
+			return
+		}
+	}
+}
+
+// ExternalSessions returns every external session across projects.
+func (l *List) ExternalSessions() []*session.ExternalSession {
+	return l.external
 }
 
 // SetSelectedInstance sets the selected index. Noop if the index is out of bounds.
@@ -383,9 +528,10 @@ func (l *List) SelectInstance(target *session.Instance) {
 
 // MoveUp swaps the selected instance with the one above it.
 func (l *List) MoveUp() bool {
-	if l.selectedIdx <= 0 || len(l.items) < 2 {
+	if l.selectedIdx <= 0 || l.selectedIdx >= len(l.items) || len(l.items) < 2 {
 		return false
 	}
+	l.swapInAll(l.items[l.selectedIdx], l.items[l.selectedIdx-1])
 	l.items[l.selectedIdx], l.items[l.selectedIdx-1] = l.items[l.selectedIdx-1], l.items[l.selectedIdx]
 	l.selectedIdx--
 	return true
@@ -396,12 +542,160 @@ func (l *List) MoveDown() bool {
 	if l.selectedIdx >= len(l.items)-1 || len(l.items) < 2 {
 		return false
 	}
+	l.swapInAll(l.items[l.selectedIdx], l.items[l.selectedIdx+1])
 	l.items[l.selectedIdx], l.items[l.selectedIdx+1] = l.items[l.selectedIdx+1], l.items[l.selectedIdx]
 	l.selectedIdx++
 	return true
 }
 
-// GetInstances returns all instances in the list
+// GetInstances returns all instances in the list, across every project.
 func (l *List) GetInstances() []*session.Instance {
-	return l.items
+	return l.all
+}
+
+// swapInAll swaps the positions of a and b in the full instance list so that
+// reordering within a project is kept when saving.
+func (l *List) swapInAll(a, b *session.Instance) {
+	ia, ib := -1, -1
+	for i, inst := range l.all {
+		if inst == a {
+			ia = i
+		} else if inst == b {
+			ib = i
+		}
+	}
+	if ia >= 0 && ib >= 0 {
+		l.all[ia], l.all[ib] = l.all[ib], l.all[ia]
+	}
+}
+
+// InProject reports whether the instance was started inside the project folder.
+// An empty project matches every instance.
+func InProject(instance *session.Instance, project string) bool {
+	return inProjectPath(instance.Path, project)
+}
+
+func inProjectPath(path, project string) bool {
+	if project == "" {
+		return true
+	}
+	return path == project || strings.HasPrefix(path, project+string(filepath.Separator))
+}
+
+// SetProject shows only the instances belonging to project.
+func (l *List) SetProject(project string) {
+	l.project = project
+	l.items = l.items[:0:0]
+	for _, inst := range l.all {
+		if InProject(inst, project) {
+			l.items = append(l.items, inst)
+		}
+	}
+	l.filterExternal()
+	l.selectedIdx = 0
+}
+
+// Remove drops an instance from the list without touching its session.
+func (l *List) Remove(target *session.Instance) {
+	for i, inst := range l.all {
+		if inst == target {
+			l.all = append(l.all[:i], l.all[i+1:]...)
+			break
+		}
+	}
+	for i, inst := range l.items {
+		if inst == target {
+			l.items = append(l.items[:i], l.items[i+1:]...)
+			if l.selectedIdx >= len(l.items) && l.selectedIdx > 0 {
+				l.selectedIdx--
+			}
+			break
+		}
+	}
+}
+
+// CountInProject returns how many agents belong to project.
+func (l *List) CountInProject(project string) int {
+	n := 0
+	for _, inst := range l.all {
+		if InProject(inst, project) {
+			n++
+		}
+	}
+	return n
+}
+
+// CountNeedsInProject returns how many sessions in project wait on the user.
+func (l *List) CountNeedsInProject(project string) int {
+	n := 0
+	for _, inst := range l.all {
+		if inst.NeedsYou && InProject(inst, project) {
+			n++
+		}
+	}
+	for _, e := range l.external {
+		if e.NeedsYou() && inProjectPath(e.Path, project) {
+			n++
+		}
+	}
+	return n
+}
+
+// NextNeedsYou finds the next session waiting on the user, looking through
+// projects in tab order starting at active (after the current selection
+// there). It returns the project and either the agent or the external session.
+func (l *List) NextNeedsYou(projects []string, active string) (string, *session.Instance, *session.ExternalSession) {
+	if len(projects) == 0 {
+		return "", nil, nil
+	}
+	start := 0
+	for i, p := range projects {
+		if p == active {
+			start = i
+		}
+	}
+	for k := 0; k <= len(projects); k++ {
+		p := projects[(start+k)%len(projects)]
+		var rows []any
+		for _, inst := range l.all {
+			if InProject(inst, p) {
+				rows = append(rows, inst)
+			}
+		}
+		for _, e := range l.external {
+			if inProjectPath(e.Path, p) {
+				rows = append(rows, e)
+			}
+		}
+		from := 0
+		if k == 0 {
+			from = l.selectedIdx + 1 // in the active tab, look past the selection first
+		} else if k == len(projects) {
+			from = 0 // wrapped around to the active tab: check what we skipped
+		}
+		for i := from; i < len(rows); i++ {
+			switch r := rows[i].(type) {
+			case *session.Instance:
+				if r.NeedsYou {
+					return p, r, nil
+				}
+			case *session.ExternalSession:
+				if r.NeedsYou() {
+					return p, nil, r
+				}
+			}
+		}
+	}
+	return "", nil, nil
+}
+
+// CountExternalInProject returns how many external sessions run in project.
+func (l *List) CountExternalInProject(project string) int {
+	n := 0
+	for _, e := range l.external {
+		if inProjectPath(e.Path, project) {
+			n++
+		}
+	}
+	return n
 }
