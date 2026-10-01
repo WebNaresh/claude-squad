@@ -11,6 +11,7 @@ import (
 	"claude-squad/session/tmux"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -39,17 +40,41 @@ var (
 				return err
 			}
 
-			// Check if we're in a git repository
 			currentDir, err := filepath.Abs(".")
 			if err != nil {
 				return fmt.Errorf("failed to get current directory: %w", err)
 			}
 
-			if !git.IsGitRepo(currentDir) {
-				return fmt.Errorf("error: %s must be run from within a git repository", binName)
+			release, err := config.AcquireLock()
+			if err != nil {
+				return err
 			}
+			defer release()
 
 			cfg := config.LoadConfig()
+
+			// Inside a git repository: open it as a tab. Anywhere else: reopen the
+			// last active tab, or ask for a project folder the first time.
+			project, err := git.RepoRoot(currentDir)
+			if err != nil {
+				project = cfg.StartProject()
+				if project == "" {
+					fmt.Println("Choose a project folder in the window that just opened…")
+					project, err = app.ChooseProjectFolder()
+					if err != nil {
+						return err
+					}
+					if project == "" {
+						return nil
+					}
+				}
+				if err := os.Chdir(project); err != nil {
+					return fmt.Errorf("failed to open project %s: %w", project, err)
+				}
+			}
+			if err := cfg.OpenProject(project); err != nil {
+				log.WarningLog.Printf("failed to save open project: %v", err)
+			}
 
 			// Program flag overrides config
 			program := cfg.GetProgram()
@@ -73,7 +98,13 @@ var (
 				log.ErrorLog.Printf("failed to stop daemon: %v", err)
 			}
 
-			return app.Run(ctx, program, autoYes)
+			err = app.Run(ctx, program, autoYes)
+			if errors.As(err, new(app.ErrRestart)) {
+				// A newer build is in place: replace this process with it. Agents run
+				// in tmux and carry on; the same pid keeps the lock.
+				return restartSelf()
+			}
+			return err
 		},
 	}
 
