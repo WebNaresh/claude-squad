@@ -34,31 +34,42 @@ func helpStart(instance *session.Instance) helpText {
 }
 
 func (h helpTypeGeneral) toContent() string {
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		titleStyle.Render("Claude Squad"),
+	k := func(key, desc string) string {
+		return keyStyle.Render(fmt.Sprintf("%-12s", key)) + descStyle.Render(desc)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left,
+		titleStyle.Render("cs: all your Claude sessions in one window"),
 		"",
-		"A terminal UI that manages multiple Claude Code (and other local agents) in separate workspaces.",
+		descStyle.Render("Each project is a tab. Its sessions are tiles; you type into the bright one."),
 		"",
-		headerStyle.Render("Managing:"),
-		keyStyle.Render("n")+descStyle.Render("         - Create a new session"),
-		keyStyle.Render("N")+descStyle.Render("         - Create a new session with a prompt"),
-		keyStyle.Render("D")+descStyle.Render("         - Kill (delete) the selected session"),
-		keyStyle.Render("↑/j, ↓/k")+descStyle.Render("  - Navigate between sessions"),
-		keyStyle.Render("J/K")+descStyle.Render("       - Reorder sessions"),
-		keyStyle.Render("↵/o")+descStyle.Render("       - Attach to the selected session"),
-		keyStyle.Render("ctrl-q")+descStyle.Render("    - Detach from session"),
+		headerStyle.Render("Moving around"),
+		k("⇧ arrows", "move between tiles"),
+		k("⌃Space ← →", "previous / next project"),
+		k("⌃Space ↑ ↓", "previous / next session"),
+		k("mouse wheel", "scroll the tile you're in"),
 		"",
-		headerStyle.Render("Handoff:"),
-		keyStyle.Render("p")+descStyle.Render("         - Commit and push branch to github"),
-		keyStyle.Render("c")+descStyle.Render("         - Checkout: commit changes and pause session"),
-		keyStyle.Render("r")+descStyle.Render("         - Resume a paused session"),
+		headerStyle.Render("⌃Space then a key")+keyDimHelp.Render("   Ctrl and Space, let go, then the key (Ctrl+] works too)"),
+		keyDimHelp.Render("the selected session"),
+		k("I", "back to typing in it"),
+		k("W", "close it (asks first)"),
+		k("Y", "copy its whole text"),
+		k("!", "jump to a session waiting for you (❓)"),
+		keyDimHelp.Render("this project"),
+		k("T", "terminal tile"),
+		k("N", "start Claude sessions from GitHub issues"),
+		k("S", "source control: stage, discard, commit, diffs"),
+		k("A", "add another project (folder chooser)"),
+		k("X", "close this project's tab"),
 		"",
-		headerStyle.Render("Other:"),
-		keyStyle.Render("tab")+descStyle.Render("       - Switch between preview, diff, and terminal tabs"),
-		keyStyle.Render("shift-↓/↑")+descStyle.Render(" - Scroll in preview/diff/terminal view"),
-		keyStyle.Render("q")+descStyle.Render("         - Quit the application"),
+		k("Q", "quit (or ⌃Q twice)"),
+		"",
+		headerStyle.Render("Good to know"),
+		descStyle.Render("Sessions keep running when cs quits or updates itself."),
+		descStyle.Render("👁 view-only tiles run in another window: Enter moves them into cs."),
+		descStyle.Render("Logs: ~/.claude-squad/activity.log, keys.log, usage.log"),
+		"",
+		keyDimHelp.Render("Press any key to close"),
 	)
-	return content
 }
 
 func (h helpTypeInstanceStart) toContent() string {
@@ -121,10 +132,11 @@ func (h helpTypeInstanceCheckout) mask() uint32 {
 }
 
 var (
-	titleStyle  = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(lipgloss.Color("#7D56F4"))
-	headerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#36CFC9"))
-	keyStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFCC00"))
-	descStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF"))
+	titleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("62"))
+	headerStyle = lipgloss.NewStyle().Bold(true)
+	keyStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("62"))
+	descStyle   = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#333333", Dark: "#cccccc"})
+	keyDimHelp  = lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
 )
 
 // showHelpScreen displays the help screen overlay if it hasn't been shown before
