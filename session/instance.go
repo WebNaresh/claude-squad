@@ -50,6 +50,9 @@ type Instance struct {
 	UpdatedAt time.Time
 	// AutoYes is true if the instance should automatically press enter when prompted.
 	AutoYes bool
+	// NeedsYou is true while Claude is waiting on the user (a question or a
+	// permission prompt). Recomputed every tick, never saved.
+	NeedsYou bool
 	// Prompt is the initial prompt to pass to the instance on startup
 	Prompt string
 
@@ -412,6 +415,14 @@ func (i *Instance) SetTitle(title string) error {
 
 func (i *Instance) Paused() bool {
 	return i.Status == Paused
+}
+
+// TmuxName returns the instance's tmux session name, or "" before it starts.
+func (i *Instance) TmuxName() string {
+	if i.tmuxSession == nil {
+		return ""
+	}
+	return i.tmuxSession.Name()
 }
 
 // TmuxAlive returns true if the tmux session is alive. This is a sanity check before attaching.
