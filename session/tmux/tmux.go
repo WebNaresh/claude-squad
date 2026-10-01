@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -74,6 +75,27 @@ func toClaudeSquadTmuxName(str string) string {
 // NewTmuxSession creates a new TmuxSession with the given name and program.
 func NewTmuxSession(name string, program string) *TmuxSession {
 	return newTmuxSession(name, program, MakePtyFactory(), cmd.MakeExecutor())
+}
+
+// Name returns the tmux session name.
+func (t *TmuxSession) Name() string { return t.sanitizedName }
+
+// NewExternalTmuxSession wraps an existing tmux session that claude-squad did
+// not create (e.g. one started by the claude launcher), using its exact name.
+func NewExternalTmuxSession(name string) *TmuxSession {
+	t := newTmuxSession(name, ProgramClaude, MakePtyFactory(), cmd.MakeExecutor())
+	t.sanitizedName = name
+	return t
+}
+
+// ReleaseClient closes claude-squad's own tmux client for this session without
+// touching the session itself. Used for external sessions so no hidden client
+// lingers and resizes the user's terminal.
+func (t *TmuxSession) ReleaseClient() {
+	if t.ptmx != nil {
+		_ = t.ptmx.Close()
+		t.ptmx = nil
+	}
 }
 
 // NewTmuxSessionWithDeps creates a new TmuxSession with provided dependencies for testing.
@@ -475,7 +497,22 @@ func (t *TmuxSession) DoesSessionExist() bool {
 // CapturePaneContent captures the content of the tmux pane
 func (t *TmuxSession) CapturePaneContent() (string, error) {
 	// Add -e flag to preserve escape sequences (ANSI color codes)
-	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-t", t.sanitizedName)
+	args := []string{"capture-pane", "-p", "-e", "-J", "-t", t.sanitizedName}
+	// When the pane is scrolled back (copy mode, e.g. mouse wheel in cs),
+	// capture the lines it shows rather than the live bottom. Only asked for
+	// panes cs scrolled, to keep the per-frame tmux calls to one.
+	if IsScrolled(t.sanitizedName) {
+		if out, err := exec.Command("tmux", "display-message", "-p", "-t", t.sanitizedName,
+			"#{pane_in_mode} #{scroll_position} #{pane_height}").Output(); err == nil {
+			var inMode, pos, height int
+			if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%d %d %d", &inMode, &pos, &height); err == nil && inMode == 1 && pos > 0 {
+				args = append(args, "-S", strconv.Itoa(-pos), "-E", strconv.Itoa(height-1-pos))
+			} else if err == nil && inMode == 0 {
+				SetScrolled(t.sanitizedName, false) // back at the live bottom
+			}
+		}
+	}
+	cmd := exec.Command("tmux", args...)
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
 		return "", fmt.Errorf("error capturing pane content: %v", err)
@@ -523,4 +560,44 @@ func CleanupSessions(cmdExec cmd.Executor) error {
 		}
 	}
 	return nil
+}
+
+// Cursor returns where the cursor of a tmux session's pane is: its column,
+// its row counted from the bottom of the pane (1 = last row), and whether
+// the program shows it. Counting from the bottom keeps it right even when
+// capture-pane -J joined wrapped lines higher up.
+func Cursor(target string) (x, fromBottom int, visible bool, err error) {
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", target,
+		"#{cursor_x} #{cursor_y} #{cursor_flag} #{pane_height}").Output()
+	if err != nil {
+		return 0, 0, false, err
+	}
+	var y, flag, height int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%d %d %d %d", &x, &y, &flag, &height); err != nil {
+		return 0, 0, false, err
+	}
+	return x, height - y, flag == 1, nil
+}
+
+var (
+	scrolledMu sync.Mutex
+	scrolled   = map[string]bool{}
+)
+
+// SetScrolled records that cs scrolled a pane back (or that it is live again).
+func SetScrolled(name string, on bool) {
+	scrolledMu.Lock()
+	defer scrolledMu.Unlock()
+	if on {
+		scrolled[name] = true
+	} else {
+		delete(scrolled, name)
+	}
+}
+
+// IsScrolled reports whether cs scrolled a pane back.
+func IsScrolled(name string) bool {
+	scrolledMu.Lock()
+	defer scrolledMu.Unlock()
+	return scrolled[name]
 }
