@@ -17,7 +17,6 @@ const (
 	KeyPush
 	KeySubmit
 
-	KeyTab        // Tab is a special keybinding for switching between panes.
 	KeySubmitName // SubmitName is a special keybinding for submitting the name of a new instance.
 
 	KeyCheckout
@@ -32,6 +31,9 @@ const (
 	// Reorder keybindings
 	KeyMoveUp
 	KeyMoveDown
+
+	// KeySession starts a plain Claude session in the project folder (no worktree).
+	KeySession
 )
 
 // GlobalKeyStringsMap is a global, immutable map string to keybinding.
@@ -50,11 +52,11 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"n":          KeyNew,
 	"D":          KeyKill,
 	"q":          KeyQuit,
-	"tab":        KeyTab,
 	"c":          KeyCheckout,
 	"r":          KeyResume,
 	"p":          KeySubmit,
 	"?":          KeyHelp,
+	"t":          KeySession,
 }
 
 // GlobalkeyBindings is a global, immutable map of KeyName tot keybinding.
@@ -78,6 +80,10 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyEnter: key.NewBinding(
 		key.WithKeys("enter", "o"),
 		key.WithHelp("↵/o", "open"),
+	),
+	KeySession: key.NewBinding(
+		key.WithKeys("t"),
+		key.WithHelp("t", "new chat here"),
 	),
 	KeyNew: key.NewBinding(
 		key.WithKeys("n"),
@@ -106,10 +112,6 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyCheckout: key.NewBinding(
 		key.WithKeys("c"),
 		key.WithHelp("c", "checkout"),
-	),
-	KeyTab: key.NewBinding(
-		key.WithKeys("tab"),
-		key.WithHelp("tab", "switch tab"),
 	),
 	KeyResume: key.NewBinding(
 		key.WithKeys("r"),
