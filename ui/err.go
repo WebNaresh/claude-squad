@@ -13,8 +13,8 @@ type ErrBox struct {
 }
 
 var errStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{
-	Light: "#FF0000",
-	Dark:  "#FF0000",
+	Light: "#c0392b",
+	Dark:  "#e06c75",
 })
 
 func NewErrBox() *ErrBox {
@@ -44,5 +44,6 @@ func (e *ErrBox) String() string {
 			err = runewidth.Truncate(err, e.width-3, "...")
 		}
 	}
-	return lipgloss.Place(e.width, e.height, lipgloss.Center, lipgloss.Center, errStyle.Render(err))
+	// Left-aligned under the key bar, so the eye finds it in the same place.
+	return lipgloss.Place(e.width, e.height, lipgloss.Left, lipgloss.Center, " "+errStyle.Render(err))
 }
