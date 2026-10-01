@@ -3,7 +3,11 @@ package ui
 import (
 	"claude-squad/log"
 	"claude-squad/session"
+
+	"strings"
+
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func tabBorderWithBottom(left, middle, right string) lipgloss.Border {
@@ -54,6 +58,10 @@ type TabbedWindow struct {
 	diff     *DiffPane
 	terminal *TerminalPane
 	instance *session.Instance
+	// fileDiff is true while the Diff tab shows a Source Control file
+	fileDiff bool
+	// fileTitle names the file whose diff is shown, in the box's top border.
+	fileTitle string
 }
 
 func NewTabbedWindow(preview *PreviewPane, diff *DiffPane, terminal *TerminalPane) *TabbedWindow {
@@ -79,16 +87,12 @@ func AdjustPreviewWidth(width int) int {
 }
 
 func (w *TabbedWindow) SetSize(width, height int) {
-	w.width = AdjustPreviewWidth(width)
+	w.width = width
 	w.height = height
 
-	// Calculate the content height by subtracting:
-	// 1. Tab height (including border and padding)
-	// 2. Window style vertical frame size
-	// 3. Additional padding/spacing (2 for the newline and spacing)
-	tabHeight := activeTabStyle.GetVerticalFrameSize() + 1
-	contentHeight := height - tabHeight - windowStyle.GetVerticalFrameSize() - 2
-	contentWidth := w.width - windowStyle.GetHorizontalFrameSize()
+	// The pane is a single box, the same size as the session tiles.
+	contentHeight := height - 2
+	contentWidth := w.width - 2
 
 	w.preview.SetSize(contentWidth, contentHeight)
 	w.diff.SetSize(contentWidth, contentHeight)
@@ -99,20 +103,19 @@ func (w *TabbedWindow) GetPreviewSize() (width, height int) {
 	return w.preview.width, w.preview.height
 }
 
-func (w *TabbedWindow) Toggle() {
-	w.activeTab = (w.activeTab + 1) % len(w.tabs)
-}
-
 // UpdatePreview updates the content of the preview pane. instance may be nil.
 func (w *TabbedWindow) UpdatePreview(instance *session.Instance) error {
 	if w.activeTab != PreviewTab {
 		return nil
 	}
-	return w.preview.UpdateContent(instance)
+	if err := w.preview.UpdateContent(instance); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (w *TabbedWindow) UpdateDiff(instance *session.Instance) {
-	if w.activeTab != DiffTab {
+	if w.activeTab != DiffTab || w.fileDiff {
 		return
 	}
 	w.diff.SetDiff(instance)
@@ -214,47 +217,12 @@ func (w *TabbedWindow) ResetTerminalToNormalMode() {
 	w.terminal.ResetToNormalMode()
 }
 
+// String renders the pane as one box showing the session, or a Source
+// Control file's diff. There is no tab row: what shows is driven by focus.
 func (w *TabbedWindow) String() string {
 	if w.width == 0 || w.height == 0 {
 		return ""
 	}
-
-	var renderedTabs []string
-
-	totalTabWidth := w.width + windowStyle.GetHorizontalFrameSize()
-	tabWidth := totalTabWidth / len(w.tabs)
-	lastTabWidth := totalTabWidth - tabWidth*(len(w.tabs)-1)
-	tabHeight := activeTabStyle.GetVerticalFrameSize() + 1 // get padding border margin size + 1 for character height
-
-	for i, t := range w.tabs {
-		width := tabWidth
-		if i == len(w.tabs)-1 {
-			width = lastTabWidth
-		}
-
-		var style lipgloss.Style
-		isFirst, isLast, isActive := i == 0, i == len(w.tabs)-1, i == w.activeTab
-		if isActive {
-			style = activeTabStyle
-		} else {
-			style = inactiveTabStyle
-		}
-		border, _, _, _, _ := style.GetBorder()
-		if isFirst && isActive {
-			border.BottomLeft = "│"
-		} else if isFirst {
-			border.BottomLeft = "├"
-		} else if isLast && isActive {
-			border.BottomRight = "│"
-		} else if isLast {
-			border.BottomRight = "┤"
-		}
-		style = style.Border(border)
-		style = style.Width(width - style.GetHorizontalFrameSize())
-		renderedTabs = append(renderedTabs, style.Render(t))
-	}
-
-	row := lipgloss.JoinHorizontal(lipgloss.Top, renderedTabs...)
 	var content string
 	switch w.activeTab {
 	case PreviewTab:
@@ -264,10 +232,35 @@ func (w *TabbedWindow) String() string {
 	case TerminalTab:
 		content = w.terminal.String()
 	}
-	window := windowStyle.Render(
-		lipgloss.Place(
-			w.width, w.height-2-windowStyle.GetVerticalFrameSize()-tabHeight,
-			lipgloss.Left, lipgloss.Top, content))
+	b := lipgloss.RoundedBorder()
+	edge := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	title := ""
+	if w.fileTitle != "" {
+		title = " " + lipgloss.NewStyle().Bold(true).Render(ansi.Truncate(w.fileTitle, max(0, w.width-6), "…")) + " "
+	}
+	top := edge.Render(b.TopLeft+b.Top) + title + edge.Render(strings.Repeat(b.Top, max(0, w.width-3-lipgloss.Width(title)))+b.TopRight)
+	box := lipgloss.NewStyle().Border(b, false, true, true, true).BorderForeground(lipgloss.Color("240")).
+		Render(lipgloss.Place(w.width-2, w.height-2, lipgloss.Left, lipgloss.Top, content))
+	return top + "\n" + box
+}
 
-	return lipgloss.JoinVertical(lipgloss.Left, "\n", row, window)
+// SetFileDiff shows a Source Control file's diff in the Diff tab; the
+// selected session's diff is not shown again until ClearFileDiff.
+func (w *TabbedWindow) SetFileDiff(title, diff string) {
+	w.fileDiff, w.fileTitle = true, title
+	w.activeTab = DiffTab
+	w.diff.SetText(diff)
+}
+
+// ClearFileDiff returns the right pane to the selected session.
+func (w *TabbedWindow) ClearFileDiff() {
+	if w.fileDiff {
+		w.fileDiff = false
+		w.activeTab = PreviewTab
+	}
+}
+
+// ShowPreview switches to the Preview tab.
+func (w *TabbedWindow) ShowPreview() {
+	w.activeTab = PreviewTab
 }
