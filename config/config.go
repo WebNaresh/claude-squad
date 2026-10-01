@@ -18,7 +18,11 @@ const (
 )
 
 // GetConfigDir returns the path to the application's configuration directory
+// CLAUDE_SQUAD_HOME overrides it (used by tests to keep their state apart).
 func GetConfigDir() (string, error) {
+	if dir := os.Getenv("CLAUDE_SQUAD_HOME"); dir != "" {
+		return dir, nil
+	}
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("failed to get config home directory: %w", err)
@@ -44,6 +48,14 @@ type Config struct {
 	BranchPrefix string `json:"branch_prefix"`
 	// Profiles is a list of named program profiles.
 	Profiles []Profile `json:"profiles,omitempty"`
+	// OpenProjects are the project tabs shown across the top, in tab order.
+	OpenProjects []string `json:"open_projects,omitempty"`
+	// MouseOff turns mouse capture off. It is on by default: clicks focus
+	// tiles and open images, the wheel scrolls. Off gives the terminal's own
+	// text selection back (Ctrl+] m toggles).
+	MouseOff bool `json:"mouse_off,omitempty"`
+	// ActiveProject is the selected tab; cs reopens it when started outside a repo.
+	ActiveProject string `json:"active_project,omitempty"`
 }
 
 // GetProgram returns the program to run. If Profiles is non-empty and
@@ -201,7 +213,7 @@ func saveConfig(config *Config) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	return os.WriteFile(configPath, data, 0644)
+	return writeFileAtomic(configPath, data, 0644)
 }
 
 // SaveConfig exports the saveConfig function for use by other packages
