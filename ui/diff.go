@@ -94,6 +94,14 @@ func (d *DiffPane) SetDiff(instance *session.Instance) {
 	}
 }
 
+// SetText shows a raw diff (e.g. one file from Source Control).
+func (d *DiffPane) SetText(diff string) {
+	d.stats = ""
+	d.diff = colorizeDiff(diff)
+	d.viewport.SetContent(d.diff)
+	d.viewport.GotoTop()
+}
+
 func (d *DiffPane) String() string {
 	return d.viewport.View()
 }
