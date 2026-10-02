@@ -64,6 +64,19 @@ tmux server), so repeated "resize X to WxH" log lines are harmless.
   text. `isMouseFragment` (`app/selection.go`) drops them, and
   activity.log logs "dropped a split mouse event".
 
+## Shift+↑/↓ between tile rows
+
+Terminal.app sends Shift+↑/↓ as plain ↑/↓ by default (Shift+←/→ do arrive),
+so cs can't see them and Claude gets an arrow key instead (it recalls old
+prompts). Shift+←/→ wrap between rows, so every tile is reachable without
+them. To make Shift+↑/↓ work, the user adds two keys in Terminal → Settings →
+Profiles → (their profile) → Keyboard → "+":
+
+| Key | Modifier | Action | Text |
+|---|---|---|---|
+| ↑ Cursor Up | Shift | Send Text | `\033[1;2A` |
+| ↓ Cursor Down | Shift | Send Text | `\033[1;2B` |
+
 ## Debugging what the user saw
 
 1. **Is the user on your build?** Self-update waits while `~/.claude-squad/hold-update`
