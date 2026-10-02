@@ -117,3 +117,7 @@ Source: the user's own description of their workflow (2026-10-01).
 - Electron / web dashboard.
 - Auto-merging PRs.
 - Paid APIs or a second AI subscription.
+
+- Auto issue loop (`app/autoissues.go`): on for every project (a in the issue picker switches it off: a `.auto-off` file next to the project's issue cache), max 6 Claude sessions and 15 issues per open PR. When a slot frees on the tab you're on, the picker opens with that many issues ticked (oldest first, skipped ones never); Enter starts, Esc waits until another session closes. Other tabs show "·N free". Never opens while typing (3s) or over another dialog.
+- Progress strip (`app/progress.go`): the row above the tiles shows the current project's open PR filling to 15 issues, open issues left (and the change since the morning), sessions running of 6, sessions finished today (a Claude session closed with ⌃Space W, kept in `progress.json`), the day streak, and Σ totals across projects.
+- gai's "Multiple open PRs" list is answered with the PR this project's issues already go to (`pickPR` in `app/issues.go`).
