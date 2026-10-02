@@ -391,3 +391,13 @@ func autoLabel(on bool) string {
 	}
 	return "auto on"
 }
+
+// Lists reports whether issue n is in the picker's list.
+func (p *IssuePicker) Lists(n int) bool {
+	for _, is := range p.issues {
+		if is.Number == n {
+			return true
+		}
+	}
+	return false
+}
