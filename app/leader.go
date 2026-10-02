@@ -4,6 +4,7 @@ import (
 	"claude-squad/session"
 	"claude-squad/ui"
 	"fmt"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 	"os/exec"
 	"strings"
@@ -26,7 +27,7 @@ func isLeaderKey(k string) bool { return k == leaderKey || k == leaderSpace }
 // commandKeys are the Ctrl+] commands, in the order shown in the key bar.
 var commandKeys = []ui.Key{
 	{"C", "new Claude"}, {"T", "terminal"}, {"A", "add project"}, {"N", "issues"},
-	{"S", "source control"}, {"Y", "copy"}, {"W", "close session"}, {"X", "close tab"},
+	{"S", "source control"}, {"P", "push"}, {"Y", "copy"}, {"W", "close session"}, {"X", "close tab"},
 	{"!", "needs you"}, {"?", "help"}, {"Q", "quit"},
 }
 
@@ -45,6 +46,8 @@ func (m *home) handleLeader(msg tea.KeyMsg) tea.Cmd {
 	case "?", "/":
 		_, cmd := m.showHelpScreen(helpTypeGeneral{}, nil)
 		return cmd
+	case "p", "P":
+		return m.pushProject()
 	case "c", "C":
 		return m.newClaudeSession()
 	case "t", "T":
@@ -76,7 +79,7 @@ func (m *home) handleLeader(msg tea.KeyMsg) tea.Cmd {
 	case "q", "Q":
 		_, cmd := m.handleQuit()
 		return cmd
-	case leaderKey, leaderSpace:
+	case leaderKey:
 		// Ctrl+] twice sends a real Ctrl+] to the session.
 		if m.sessionFocus != "" {
 			select {
@@ -128,6 +131,9 @@ func (m *home) keyBar(width int) string {
 	case m.leader:
 		state = "⌃Space pressed, now press"
 		keys = commandKeys
+	case m.serversFocused:
+		state = "Servers"
+		keys = []ui.Key{{"↑↓", "server"}, {"x/enter", "stop"}, {"esc", "back to terminal"}, {"⇧↑", "source control"}}
 	case m.sourceControl.Focused():
 		state = "Source Control"
 		keys = []ui.Key{{"↑↓", "file"}, {"space", "stage / unstage"}, {"a", "stage all"}, {"u", "unstage all"}, {"d", "discard"}, {"c", "commit"}, {"esc", "back"}}
@@ -166,4 +172,34 @@ func (m *home) openSentFiles() tea.Cmd {
 		return m.handleError(fmt.Errorf("select a Claude tile to open its images"))
 	}
 	return openGallery(e, "")
+}
+
+var (
+	leaderBoxStyle = lipgloss.NewStyle().Border(lipgloss.ThickBorder()).
+			BorderForeground(lipgloss.Color("#0078d4")).Padding(0, 2)
+	leaderTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ffffff")).
+				Background(lipgloss.Color("#0078d4")).Padding(0, 1)
+	leaderKeyStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#4fc1ff"))
+	leaderDescStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#cccccc"))
+	leaderDimStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
+)
+
+// leaderMenu is the box shown in the middle of the screen while command mode
+// is on (after ⌃Space), so it's obvious the next key is a command.
+func (m *home) leaderMenu() string {
+	rows := []string{leaderTitleStyle.Render("⌃Space · command mode"), ""}
+	keys := append([]ui.Key{{"←→", "project"}, {"↑↓", "session"}, {"I", "back to typing"}}, commandKeys...)
+	half := (len(keys) + 1) / 2
+	item := func(k ui.Key) string {
+		return leaderKeyStyle.Render(fmt.Sprintf("%-3s", k[0])) + " " + leaderDescStyle.Render(fmt.Sprintf("%-16s", k[1]))
+	}
+	for i := 0; i < half; i++ {
+		line := item(keys[i])
+		if i+half < len(keys) {
+			line += "   " + item(keys[i+half])
+		}
+		rows = append(rows, line)
+	}
+	rows = append(rows, "", leaderDimStyle.Render("press a key · esc cancels"))
+	return leaderBoxStyle.Render(strings.Join(rows, "\n"))
 }
