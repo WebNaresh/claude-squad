@@ -106,6 +106,11 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Cause:** Ctrl+G in Claude opened the prompt in VS Code (`code -w`); Claude waits for the tab to close. Leftover lines stay until Claude redraws (Ctrl+L).
 - **Fix:** the tile title says "? waiting for your editor · close its tab" (`app/grid.go`).
 
+### Shift+↑/↓ don't move between tile rows
+- **Saw:** with tiles in two rows, Shift+↑/↓ did nothing in cs (and went to Claude as plain arrows).
+- **Cause:** Terminal.app sends Shift+↑/↓ as plain ↑/↓ unless its profile maps them; keys.log never shows shift+up/down.
+- **Fix:** Shift+←/→ run through tiles in reading order, wrapping rows; ← goes to the dock only from the first tile (`app/grid.go` moveTile). Terminal mapping steps in `docs/tiles-mouse-debugging.md`.
+
 ## Speed
 
 ### Lag while typing
