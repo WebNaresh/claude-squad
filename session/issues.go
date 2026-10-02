@@ -113,13 +113,59 @@ func IssueNumberOf(name string) int {
 	return n
 }
 
-// StartIssueSession runs `gai issue <url>` in a new tmux session in dir. gai
-// attaches the issue to the open PR (writing the PR text with the local AI)
-// and then starts Claude with the issue thread, in the same session.
+// queuedOption marks an issue session that only shows "queued" so far.
+const queuedOption = "@cs_queued"
+
+// QueueIssueSession opens an issue's session at once, showing that it waits
+// for its turn, so every picked issue has its tile right away. Its gai run
+// starts later (StartIssueSession) in the same session.
+func QueueIssueSession(dir string, issue Issue) (string, error) {
+	name := IssueSessionName(dir, issue.Number)
+	if exec.Command("tmux", "has-session", "-t", "="+name).Run() == nil {
+		return name, nil // already there
+	}
+	msg := fmt.Sprintf("#%d %s\n\nQueued: gai attaches the picked issues to the PR one at a time,\n"+
+		"so this starts after the ones before it. Claude starts here then.\n", issue.Number, issue.Title)
+	if out, err := exec.Command("tmux", "new-session", "-d", "-s", name, "-c", dir, "-x", "200", "-y", "50",
+		"sh", "-c", `printf "%b" "$1"; exec sleep 86400`, "sh", msg).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("could not open issue #%d: %s", issue.Number, strings.TrimSpace(string(out)))
+	}
+	_ = exec.Command("tmux", "set-option", "-t", name, "window-size", "latest").Run()
+	_ = exec.Command("tmux", "set-option", "-t", name, queuedOption, "1").Run()
+	return name, nil
+}
+
+// CloseStaleQueuedIssues ends "queued" issue sessions left by an earlier cs
+// run: the queue lives in memory, so nothing would ever start them.
+func CloseStaleQueuedIssues() {
+	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name} #{"+queuedOption+"}").Output()
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if name, flag, ok := strings.Cut(line, " "); ok && flag == "1" {
+			_ = exec.Command("tmux", "kill-session", "-t", "="+name).Run()
+		}
+	}
+}
+
+// StartIssueSession runs `gai issue <url>` in the issue's tmux session in
+// dir (replacing its "queued" screen, or in a new session). gai attaches the
+// issue to the open PR (writing the PR text with the local AI) and then
+// starts Claude with the issue thread, in the same session.
 func StartIssueSession(dir string, issue Issue) (string, error) {
 	name := IssueSessionName(dir, issue.Number)
 	if exec.Command("tmux", "has-session", "-t", "="+name).Run() == nil {
-		return name, nil // already running
+		out, _ := exec.Command("tmux", "show-options", "-v", "-t", name, queuedOption).Output()
+		if strings.TrimSpace(string(out)) != "1" {
+			return name, nil // already running
+		}
+		_ = exec.Command("tmux", "set-option", "-u", "-t", name, queuedOption).Run()
+		if out, err := exec.Command("tmux", "respawn-pane", "-k", "-t", name, "-c", dir,
+			"gai", "issue", issue.URL).CombinedOutput(); err != nil {
+			return "", fmt.Errorf("could not start issue #%d: %s", issue.Number, strings.TrimSpace(string(out)))
+		}
+		return name, nil
 	}
 	if out, err := exec.Command("tmux", "new-session", "-d", "-s", name, "-c", dir, "-x", "200", "-y", "50",
 		"gai", "issue", issue.URL).CombinedOutput(); err != nil {
@@ -127,6 +173,11 @@ func StartIssueSession(dir string, issue Issue) (string, error) {
 	}
 	_ = exec.Command("tmux", "set-option", "-t", name, "window-size", "latest").Run()
 	return name, nil
+}
+
+// PressKeys types text and Enter into a tmux session.
+func PressKeys(name, text string) error {
+	return exec.Command("tmux", "send-keys", "-t", name, "-l", text+"\r").Run()
 }
 
 // PaneLastLine returns the last non-empty line on a tmux session's screen,
