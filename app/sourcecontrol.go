@@ -20,6 +20,7 @@ type scStatusMsg struct {
 	branch     string
 	files      []git.FileStatus
 	autoCommit bool
+	sync       git.SyncState
 	err        error
 }
 
@@ -44,7 +45,7 @@ func (m *home) refreshSourceControl() tea.Cmd {
 		started := time.Now()
 		files, err := git.Status(root)
 		perf.gitNanos.Store(int64(time.Since(started)))
-		return scStatusMsg{root: root, branch: git.Branch(root), files: files, autoCommit: git.AutoCommitWatched(root), err: err}
+		return scStatusMsg{root: root, branch: git.Branch(root), files: files, autoCommit: git.AutoCommitWatched(root), sync: git.Sync(root), err: err}
 	}
 }
 
