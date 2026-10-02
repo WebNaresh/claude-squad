@@ -16,7 +16,7 @@ func TestRenderTileWidth(t *testing.T) {
 			{Title: strings.Repeat("long title ", 20), Status: "view only", Content: "x"},
 			{Title: "needs", Status: "busy", NeedsYou: true},
 		} {
-			out := renderTile(tile, focused, 50, 5)
+			out := RenderTile(tile, focused, 50, 5)
 			for i, l := range strings.Split(out, "\n") {
 				if w := lipgloss.Width(l); w != 54 {
 					t.Errorf("focused=%v %q line %d width %d, want 54", focused, tile.Title, i, w)
@@ -60,7 +60,7 @@ func TestKeyRowFits(t *testing.T) {
 }
 
 func TestEmptyTileSaysSo(t *testing.T) {
-	out := renderTile(GridTile{Title: "x", Status: "idle"}, false, 40, 4)
+	out := RenderTile(GridTile{Title: "x", Status: "idle"}, false, 40, 4)
 	if !strings.Contains(out, "Nothing on screen yet") {
 		t.Errorf("empty tile shows no hint:\n%s", out)
 	}
