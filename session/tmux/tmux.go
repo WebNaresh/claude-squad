@@ -497,27 +497,57 @@ func (t *TmuxSession) DoesSessionExist() bool {
 // CapturePaneContent captures the content of the tmux pane
 func (t *TmuxSession) CapturePaneContent() (string, error) {
 	// Add -e flag to preserve escape sequences (ANSI color codes)
-	args := []string{"capture-pane", "-p", "-e", "-J", "-t", t.sanitizedName}
-	// When the pane is scrolled back (copy mode, e.g. mouse wheel in cs),
-	// capture the lines it shows rather than the live bottom. Only asked for
-	// panes cs scrolled, to keep the per-frame tmux calls to one.
-	if IsScrolled(t.sanitizedName) {
-		if out, err := exec.Command("tmux", "display-message", "-p", "-t", t.sanitizedName,
-			"#{pane_in_mode} #{scroll_position} #{pane_height}").Output(); err == nil {
-			var inMode, pos, height int
-			if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%d %d %d", &inMode, &pos, &height); err == nil && inMode == 1 && pos > 0 {
-				args = append(args, "-S", strconv.Itoa(-pos), "-E", strconv.Itoa(height-1-pos))
-			} else if err == nil && inMode == 0 {
-				SetScrolled(t.sanitizedName, false) // back at the live bottom
-			}
-		}
-	}
+	args := append([]string{"capture-pane", "-p", "-e", "-J", "-t", t.sanitizedName}, scrolledRange(t.sanitizedName)...)
 	cmd := exec.Command("tmux", args...)
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
 		return "", fmt.Errorf("error capturing pane content: %v", err)
 	}
 	return string(output), nil
+}
+
+// scrolledRange returns the capture-pane -S/-E arguments for the lines a
+// pane scrolled back in copy mode (e.g. mouse wheel in cs) shows, rather
+// than the live bottom. Only asked for panes cs scrolled, to keep the
+// per-frame tmux calls to one.
+func scrolledRange(target string) []string {
+	if !IsScrolled(target) {
+		return nil
+	}
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", target,
+		"#{pane_in_mode} #{scroll_position} #{pane_height}").Output()
+	if err != nil {
+		return nil
+	}
+	var inMode, pos, height int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%d %d %d", &inMode, &pos, &height); err == nil && inMode == 1 && pos > 0 {
+		return []string{"-S", strconv.Itoa(-pos), "-E", strconv.Itoa(height - 1 - pos)}
+	} else if err == nil && inMode == 0 {
+		SetScrolled(target, false) // back at the live bottom
+	}
+	return nil
+}
+
+// CaptureScreen returns a pane's visible rows exactly as tmux wraps them
+// (no -J), one line per row, so the cursor position lines up even when a
+// long prompt and what is typed after it wrap.
+func CaptureScreen(target string) (string, error) {
+	args := append([]string{"capture-pane", "-p", "-e", "-t", target}, scrolledRange(target)...)
+	out, err := exec.Command("tmux", args...).Output()
+	if err != nil {
+		return "", fmt.Errorf("error capturing pane content: %v", err)
+	}
+	return string(out), nil
+}
+
+// CurrentCommand returns the program running in the foreground of a pane
+// ("zsh" when the shell waits for a command).
+func CurrentCommand(target string) string {
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", target, "#{pane_current_command}").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // CapturePaneContentWithOptions captures the pane content with additional options
