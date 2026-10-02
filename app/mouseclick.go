@@ -4,6 +4,7 @@ import (
 	"claude-squad/session"
 	"claude-squad/ui"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -124,6 +125,10 @@ func (m *home) handleGridMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
 		default:
 		}
 		m.lastKey = time.Now() // redraw tiles fast while scrolling (previewInterval)
+		// A trackpad sends scroll events in bursts of hundreds; drawing a
+		// frame for each kept the UI busy and keys waited (2,000+ in two
+		// minutes once). The next preview tick shows the scrolled tile.
+		m.skipRender = true
 		// Recapture this tile on the next frame even if it isn't focused
 		// (marked stale, so the old picture shows until then).
 		if key := rowKey(entry.Instance, entry.External); m.tileCache != nil {
@@ -160,13 +165,23 @@ func (m *home) clickAt(hit gridHit, e *session.ExternalSession) tea.Cmd {
 	if e == nil || hit.row < 0 {
 		return nil
 	}
+	// The path under the click wins: an image Claude sent opens on the
+	// session's image page, any other file on its own.
+	if p := pathAt(hit.lines, hit.row, e.Path); p != "" {
+		if isImage(p) && slices.Contains(sentFiles(e), p) {
+			return openGallery(e, p)
+		}
+		return openPath(p)
+	}
 	if file := imageAt(hit.lines, hit.row, e); file != "" {
 		return openGallery(e, file)
 	}
-	if p := pathAt(hit.lines, hit.row, e.Path); p != "" {
-		return openPath(p)
-	}
 	return nil
+}
+
+func sentFiles(e *session.ExternalSession) []string {
+	files, _ := e.SentFiles()
+	return files
 }
 
 // imageAt returns the sent image shown at content row row, or "". Claude
@@ -192,7 +207,7 @@ func imageAt(lines []string, row int, e *session.ExternalSession) string {
 	}
 	var b strings.Builder
 	for _, l := range lines[start : end+1] {
-		b.WriteString(strings.Join(strings.Fields(l), ""))
+		b.WriteString(strings.Join(strings.Fields(wrapRow(l)), ""))
 	}
 	block := b.String()
 	if !strings.Contains(block, "[image]") && !strings.Contains(block, "/") {
