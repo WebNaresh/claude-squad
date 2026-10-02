@@ -58,6 +58,8 @@ func (m *home) closeSession() tea.Cmd {
 		question = fmt.Sprintf("Close %s? Claude stops; the conversation can be resumed later.", name)
 		stop = func() error { return exec.Command("tmux", "kill-session", "-t", "="+e.Name).Run() }
 	}
+	project := m.projectOf(e.Path)
+	finished := e.Status != "" || session.IssueNumberOf(e.Name) > 0
 	cmd := m.confirmAction(question, func() tea.Msg {
 		if err := stop(); err != nil {
 			return fmt.Errorf("could not close %s: %w", name, err)
@@ -65,7 +67,7 @@ func (m *home) closeSession() tea.Cmd {
 		logEvent("session closed: %s", e.Name)
 		// Drop the tile now; reloading the session list first (claude agents)
 		// kept the dead tile on screen for a second or more.
-		return externalClosedMsg{name: e.Name, sessionID: e.SessionID, pid: e.Pid}
+		return externalClosedMsg{name: e.Name, sessionID: e.SessionID, pid: e.Pid, project: project, finished: finished}
 	})
 	m.confirmationOverlay.ConfirmLabel = "Close"
 	return cmd
@@ -79,6 +81,10 @@ type externalClosedMsg struct {
 	name      string
 	sessionID string
 	pid       int
+	// project and finished: a Claude session (not a plain terminal) closed,
+	// counted as done today in the progress strip (progress.go).
+	project  string
+	finished bool
 }
 
 // justClosedFor is how long a closed session is kept out of the list, so a
