@@ -5,12 +5,15 @@ import (
 	"claude-squad/session/tmux"
 	"claude-squad/ui"
 	"fmt"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // The grid: the right side shows every session of the current project
@@ -35,8 +38,8 @@ func (m *home) gridRows() []gridEntry {
 		// Sessions first, the project terminal last (right/bottom).
 		var terms []gridEntry
 		for _, e := range m.list.ExternalSessions() {
-			if m.projectOf(e.Path) != p {
-				continue
+			if m.projectOf(e.Path) != p || m.isDock(e) {
+				continue // the docked terminal sits under Source Control
 			}
 			if strings.HasPrefix(e.Name, session.TermPrefix) {
 				terms = append(terms, gridEntry{p, ui.Row{External: e}})
@@ -49,8 +52,12 @@ func (m *home) gridRows() []gridEntry {
 	return out
 }
 
-// gridFocused returns the index of the selected session among gridRows.
+// gridFocused returns the index of the selected session among gridRows, or
+// -1 when the docked terminal is selected (no tile is focused then).
 func (m *home) gridFocused(rows []gridEntry) int {
+	if m.isDock(m.list.GetSelectedExternal()) {
+		return -1
+	}
 	key := m.selectedRowKey()
 	for i, r := range rows {
 		if r.project == m.projectTabs.Active() && rowKey(r.row.Instance, r.row.External) == key {
@@ -65,15 +72,27 @@ func (m *home) gridFocused(rows []gridEntry) int {
 // that runs the tmux captures on a background goroutine, so key presses and
 // switches are never stuck behind them. One capture runs at a time.
 func (m *home) refreshGrid() tea.Cmd {
+	if !m.sessionsLoaded {
+		return nil // which shell is the dock isn't known yet; it must not be sized as a tile
+	}
+	if m.dockNames[m.projectTabs.Active()] == "" {
+		_, _ = m.ensureDock()
+	}
 	rows := m.gridRows()
 	m.gridFocus = m.gridFocused(rows)
+	if m.tileCache == nil {
+		m.tileCache = map[string]cachedTile{}
+	}
+	// Another tab (or tiles came or went): draw it from the cache now, even
+	// while a capture runs, instead of leaving the old or a blank grid up.
+	if keys := m.rowKeys(rows); keys != m.gridKeys {
+		m.gridKeys = keys
+		m.gridTiles = m.cachedTiles(rows)
+	}
 	if m.gridCapturing {
 		return nil
 	}
 	tw, th := ui.GridTileSize(len(rows), m.paneWidth, m.contentHeight)
-	if m.tileCache == nil {
-		m.tileCache = map[string]cachedTile{}
-	}
 	live := m.selectedLiveName()
 	tiles := make([]ui.GridTile, len(rows))
 	var jobs []gridJob
@@ -96,6 +115,9 @@ func (m *home) refreshGrid() tea.Cmd {
 			tiles[i] = t
 		}
 		j := gridJob{idx: i, key: key, row: r.row, cursorFor: m.sessionFocus}
+		if cached && c.w == tw && c.h == th {
+			j.prev = c.tile.Content
+		}
 		name := ""
 		if r.row.Instance != nil {
 			name = r.row.Instance.TmuxName()
@@ -118,21 +140,31 @@ func (m *home) refreshGrid() tea.Cmd {
 		m.gridTiles = tiles
 		return nil
 	}
-	if len(m.gridTiles) != len(tiles) {
-		m.gridTiles = tiles // layout changed: show what we have now
-	}
+	keys := m.gridKeys
 	m.gridCapturing = true
 	return func() tea.Msg {
 		captured := make([]ui.GridTile, len(jobs))
 		for n, j := range jobs {
 			captured[n] = captureTile(j, tw, th)
 		}
-		return gridCapturedMsg{tiles: tiles, jobs: jobs, captured: captured, w: tw, h: th}
+		return gridCapturedMsg{tiles: tiles, jobs: jobs, captured: captured, w: tw, h: th, keys: keys}
 	}
+}
+
+// contentRows is the number of rows down to the last non-blank one.
+func contentRows(s string) int {
+	lines := strings.Split(s, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(ansi.Strip(lines[i])) != "" {
+			return i + 1
+		}
+	}
+	return 0
 }
 
 // gridJob is one tile to capture on the background goroutine.
 type gridJob struct {
+	prev      string // the tile's last capture at this size, to spot half-drawn screens
 	idx       int
 	key       string
 	row       ui.Row
@@ -146,6 +178,7 @@ type gridCapturedMsg struct {
 	jobs     []gridJob
 	captured []ui.GridTile
 	w, h     int
+	keys     string // gridKeys when the capture started
 }
 
 // applyGridCapture stores the background capture's tiles (UI thread).
@@ -155,6 +188,11 @@ func (m *home) applyGridCapture(msg gridCapturedMsg) {
 		t := msg.captured[n]
 		m.tileCache[j.key] = cachedTile{tile: t, title: t.Title, at: time.Now(), w: msg.w, h: msg.h}
 		msg.tiles[j.idx] = t
+	}
+	if msg.keys != m.gridKeys {
+		// The tab changed or tiles came or went while this capture ran: it
+		// only warms the cache; the grid on screen is already the new one.
+		return
 	}
 	m.gridTiles = msg.tiles
 }
@@ -172,11 +210,11 @@ func captureTile(j gridJob, w, h int) ui.GridTile {
 			_ = inst.SetPreviewSize(w, h)
 		}
 		t.Content, _ = inst.Preview()
-		t.Content = cursorInto(inst.TmuxName(), j.cursorFor, t.Content)
+		t.Content = cursorInto(inst.TmuxName(), j.cursorFor, t.Content, 0)
 		return t
 	}
 	e := j.row.External
-	t := ui.GridTile{Title: e.Title(), NeedsYou: e.NeedsYou(), Status: e.Status}
+	t := ui.GridTile{Title: e.Title(), NeedsYou: e.NeedsYou(), Status: e.Status, Stage: session.StagePhase(e.SessionID)}
 	if e.Kind == session.KindTerminal {
 		md, version := e.Conversation()
 		t.Status = "view only"
@@ -190,19 +228,74 @@ func captureTile(j gridJob, w, h int) ui.GridTile {
 	}
 	if j.fit {
 		(&session.ExternalSession{Kind: e.Kind, Name: e.Name, Live: name, Clients: e.Clients}).FitTo(w, h)
+		// Give the program time to redraw for the new size; captured at once
+		// it is still half drawn (seen as half-empty tiles after resizes).
+		time.Sleep(150 * time.Millisecond)
 	}
 	t.Content, _ = tmux.NewExternalTmuxSession(name).CapturePaneContent()
-	t.Content = cursorInto(name, j.cursorFor, t.Content)
+	if j.prev != "" && contentRows(t.Content) < contentRows(j.prev)*2/3 {
+		// Much emptier than last time: likely caught Claude between erasing
+		// its lower lines and redrawing them. Look again a moment later; a
+		// real clear (/clear) is still empty then.
+		time.Sleep(40 * time.Millisecond)
+		t.Content, _ = tmux.NewExternalTmuxSession(name).CapturePaneContent()
+	}
+	dropped := 0
+	if !tmux.IsScrolled(name) {
+		t.Content, dropped = fillFromHistory(name, t.Content)
+	}
+	if strings.Contains(ansi.Strip(t.Content), "Save and close editor to continue") {
+		// Claude opened the prompt in an editor (Ctrl+G) and reads nothing
+		// until it closes; looked like a frozen session.
+		t.Stage, t.NeedsYou = "? waiting for your editor · close its tab", false
+	}
+	if r := contentRows(t.Content); r > 0 && r < h/2 {
+		// Evidence for half-empty tiles: what was captured, and why.
+		logEvent("half-empty tile %s: text in %d of %d rows (fit=%v dropped=%d)", name, r, h, j.fit, dropped)
+	}
+	t.Content = cursorInto(name, j.cursorFor, t.Content, dropped)
 	return t
 }
 
+// fillFromHistory bottom-aligns an inline screen. Claude (not full-screen)
+// draws from the top, so after its window grows the lower rows stay empty
+// and the tile looked half filled. The empty rows are dropped and the same
+// number of earlier lines from the pane's history fill the top. It returns
+// the content and how many rows were dropped from the bottom.
+func fillFromHistory(name, content string) (string, int) {
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	rows := contentRows(content)
+	blank := len(lines) - rows
+	if blank < 2 || rows == 0 {
+		return content, 0
+	}
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", name, "#{alternate_on} #{history_size}").Output()
+	if err != nil {
+		return content, 0
+	}
+	var alt, hist int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%d %d", &alt, &hist); err != nil || alt == 1 {
+		return content, 0 // full-screen apps lay out their own screen
+	}
+	var above []string
+	if n := min(blank, hist); n > 0 {
+		h, err := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-S", strconv.Itoa(-n), "-E", "-1", "-t", name).Output()
+		if err == nil {
+			above = strings.Split(strings.TrimSuffix(string(h), "\n"), "\n")
+		}
+	}
+	return strings.Join(append(above, lines[:rows]...), "\n") + "\n", blank
+}
+
 // cursorInto draws the cursor into a tile when it's the session being typed into.
-func cursorInto(target, focus, content string) string {
+// dropped is how many rows were cut from the bottom of the screen
+// (fillFromHistory), which moves the cursor that much closer to the bottom.
+func cursorInto(target, focus, content string, dropped int) string {
 	if target == "" || target != focus {
 		return content
 	}
 	if x, fromBottom, visible, err := tmux.Cursor(target); err == nil && visible {
-		return ui.DrawCursor(content, x, fromBottom)
+		return ui.DrawCursor(content, x, fromBottom-dropped)
 	}
 	return content
 }
@@ -227,6 +320,15 @@ func (m *home) moveTile(dx, dy int) tea.Cmd {
 	}
 	cols, _, _ := ui.GridLayout(n, m.paneWidth, m.contentHeight)
 	cur := m.gridFocused(rows)
+	if cur < 0 {
+		// From the dock (left of the grid): → goes to the first tile.
+		if dx <= 0 {
+			return nil
+		}
+		cur, dx = 0, 0
+	} else if dx < 0 && cur%cols == 0 {
+		return m.focusDock() // ← from the left-most column
+	}
 	i := cur + dx + dy*cols
 	if dy > 0 && i >= n && cur/cols < (n-1)/cols {
 		i = n - 1 // nothing directly below: go to the last tile on the next row
@@ -389,4 +491,31 @@ func (m *home) renderGridCached() string {
 	m.gridRendered = lipgloss.NewStyle().PaddingTop(1).Render(
 		ui.RenderGrid(m.gridTiles, m.gridFocus, m.paneWidth, m.contentHeight))
 	return m.gridRendered
+}
+
+// rowKeys names the grid's sessions in order.
+func (m *home) rowKeys(rows []gridEntry) string {
+	var b strings.Builder
+	for _, r := range rows {
+		b.WriteString(rowKey(r.row.Instance, r.row.External))
+		b.WriteByte('|')
+	}
+	return b.String()
+}
+
+// cachedTiles builds the grid from the last captures; a session never
+// captured yet shows its title over an empty tile until its first capture.
+func (m *home) cachedTiles(rows []gridEntry) []ui.GridTile {
+	tiles := make([]ui.GridTile, len(rows))
+	for i, r := range rows {
+		if c, ok := m.tileCache[rowKey(r.row.Instance, r.row.External)]; ok {
+			tiles[i] = c.tile
+			tiles[i].Title = c.title
+		} else if r.row.Instance != nil {
+			tiles[i] = ui.GridTile{Title: r.row.Instance.Title, Content: "Loading…"}
+		} else {
+			tiles[i] = ui.GridTile{Title: r.row.External.Title(), Content: "Loading…"}
+		}
+	}
+	return tiles
 }
