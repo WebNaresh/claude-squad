@@ -1,6 +1,7 @@
 package app
 
 import (
+	"claude-squad/config"
 	"claude-squad/session"
 	"fmt"
 	"os"
@@ -97,7 +98,7 @@ func (m *home) autoRunning(project string) int {
 func prRoom(issues []session.Issue) (room, pr int) {
 	count := map[int]int{}
 	for _, is := range issues {
-		if is.PR > 0 {
+		if is.PR > 0 && !is.PRBot { // a bot's PR is never ours
 			count[is.PR]++
 			if count[is.PR] > count[pr] || pr == 0 {
 				pr = is.PR
@@ -179,8 +180,8 @@ func (m *home) autoCheck() tea.Cmd {
 			delete(m.autoDeclined, p)
 		}
 		if m.state != stateDefault || m.issuePicker != nil || m.issueJob != nil || len(m.issueQueue) > 0 ||
-			time.Since(m.lastKey) < typingPause {
-			continue
+			time.Since(m.lastKey) < typingPause || daemonRunning() {
+			continue // the background runner starts them on its own
 		}
 		delete(m.autoSaid, p)
 		cmds = append(cmds, m.offerIssues(p, n, running, room, pr))
@@ -221,3 +222,7 @@ func (m *home) autoPickerClosed(project string, started bool) {
 	m.autoDeclined[project] = m.autoRunning(project)
 	logEvent("auto issues: declined in %s; asks again when a session closes", filepath.Base(project))
 }
+
+// daemonRunning reports whether the background issue runner is up
+// (issuesdaemon.go); the window then leaves starting issues to it.
+var daemonRunning = func() bool { return config.LockHolder(config.IssuesDaemonLock) != 0 }
