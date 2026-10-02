@@ -14,10 +14,10 @@ import (
 )
 
 var (
-	ipBoxStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("62")).Padding(0, 1)
-	ipTitleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("62"))
+	ipBoxStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#0078d4")).Padding(0, 1)
+	ipTitleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#0078d4"))
 	ipDimStyle    = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#888888"})
-	ipCursorStyle = lipgloss.NewStyle().Background(lipgloss.Color("#dde4f0")).Foreground(lipgloss.Color("#1a1a1a"))
+	ipCursorStyle = lipgloss.NewStyle().Background(lipgloss.Color("#04395e")).Foreground(lipgloss.Color("#ffffff"))
 )
 
 // IssuePickDefault is how many of the first issues are ticked when the
