@@ -112,7 +112,7 @@ func readIssueCache(project string) ([]session.Issue, bool) {
 	out := make([]session.Issue, len(c))
 	for i, ci := range c {
 		out[i] = ci.Issue
-		out[i].PR = ci.PR
+		out[i].PR, out[i].PRBot = ci.PR, ci.PRBot
 	}
 	return out, true
 }
@@ -124,7 +124,7 @@ func writeIssueCache(project string, issues []session.Issue) {
 	}
 	c := make([]cachedIssue, len(issues))
 	for i, is := range issues {
-		c[i] = cachedIssue{is, is.PR}
+		c[i] = cachedIssue{is, is.PR, is.PRBot}
 	}
 	if data, err := json.Marshal(c); err == nil {
 		_ = os.WriteFile(f, data, 0o644)
@@ -198,7 +198,8 @@ func writePrefs(project string, p issuePrefs) {
 // cachedIssue stores PR too (Issue leaves it out of its JSON).
 type cachedIssue struct {
 	session.Issue
-	PR int `json:"pr"`
+	PR    int  `json:"pr"`
+	PRBot bool `json:"pr_bot"`
 }
 
 // busyIssues returns the issue numbers that already have a session in project.
@@ -258,7 +259,7 @@ func (m *home) handleIssuePickerKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	done, start := p.HandleKey(msg.String())
 	if k := msg.String(); (k == " " || k == "x") && !p.Loading {
-		writeSkipped(p.Project, p.Skipped())
+		writeSkipped(p.Project, mergeSkipped(readSkipped(p.Project), p))
 	}
 	if !done {
 		return nil
@@ -385,6 +386,20 @@ func (m *home) pickPR(j *issueJob) tea.Cmd {
 	if room, pr := prRoom(m.issueCache[j.project]); pr > 0 && room > 0 {
 		target = pr
 	}
+	j.answered = "pr"
+	keys, ok := prKeys(screen, target)
+	if !ok {
+		logEvent("issue queue: #%d gai asks which PR; no PR of this project's issues in its list, left to you", j.issue.Number)
+		return m.handleError(fmt.Errorf("issue #%d: gai asks which PR to use; pick one in its tile", j.issue.Number))
+	}
+	_ = session.SendKeys(j.name, keys...)
+	logEvent("issue queue: #%d picked PR #%d in gai's list", j.issue.Number, target)
+	return nil
+}
+
+// prKeys returns the keys that move gai's PR list cursor to PR target and
+// press Enter, or ok=false when target isn't in the list.
+func prKeys(screen string, target int) (keys []string, ok bool) {
 	cursor, at := -1, -1
 	row := 0
 	for _, l := range strings.Split(screen, "\n") {
@@ -400,22 +415,17 @@ func (m *home) pickPR(j *issueJob) tea.Cmd {
 		}
 		row++
 	}
-	j.answered = "pr"
 	if target == 0 || at < 0 || cursor < 0 {
-		logEvent("issue queue: #%d gai asks which PR; no PR of this project's issues in its list, left to you", j.issue.Number)
-		return m.handleError(fmt.Errorf("issue #%d: gai asks which PR to use; pick one in its tile", j.issue.Number))
+		return nil, false
 	}
 	key := "Down"
 	if at < cursor {
 		key = "Up"
 	}
-	var keys []string
 	for i := 0; i < abs(at-cursor); i++ {
 		keys = append(keys, key)
 	}
-	_ = session.SendKeys(j.name, append(keys, "Enter")...)
-	logEvent("issue queue: #%d picked PR #%d in gai's list (%d %s)", j.issue.Number, target, abs(at-cursor), key)
-	return nil
+	return append(keys, "Enter"), true
 }
 
 func abs(n int) int {
@@ -423,4 +433,17 @@ func abs(n int) int {
 		return -n
 	}
 	return n
+}
+
+// mergeSkipped is the picker's skips plus earlier ones it doesn't list (an
+// issue skipped with /skip while already in a PR is hidden from the picker
+// and must stay skipped).
+func mergeSkipped(before map[int]bool, p *ui.IssuePicker) []int {
+	out := p.Skipped()
+	for n := range before {
+		if !p.Lists(n) {
+			out = append(out, n)
+		}
+	}
+	return out
 }
