@@ -52,6 +52,7 @@ func Run(ctx context.Context, program string, autoYes bool) error {
 		opts = append(opts, tea.WithMouseCellMotion())
 	}
 	p := tea.NewProgram(h, opts...)
+	startWatchdog()
 	// Auto-wrap off while cs draws. Some characters (⚠️ and other emoji)
 	// are drawn wider by the terminal than cs measures them; with wrapping on,
 	// such a row spills onto the next one, every row below shifts down, and
@@ -217,11 +218,15 @@ type home struct {
 	// is each project's docked terminal; dockHidden folds it to one status
 	// line; dockShots keeps each dock's last capture, so a tab switch shows
 	// its terminal at once (dock.go).
-	leftWidth     int
-	dockNames     map[string]string
-	dockHidden    bool
-	dockShots     map[string]dockCapturedMsg
-	dockCapturing bool
+	leftWidth  int
+	dockNames  map[string]string
+	dockHidden bool
+	dockShots  map[string]dockCapturedMsg
+	// servers are the listening ports, with the tile that started each (servers.go)
+	servers        []session.Server
+	serversFocused bool
+	serverCursor   int
+	dockCapturing  bool
 	// lastSessions/lastAgents are what the last refresh saw (for the activity log)
 	lastSessions map[string]string
 	lastAgents   map[string]string
@@ -240,6 +245,7 @@ type home struct {
 	sourceControl *ui.SourceControl
 	scLoading     map[string]bool
 	scCache       map[string]scStatusMsg
+	bar           statusBar // branch, push and PR at the right of the bottom row
 	// commitOverlay is the commit message box shown in stateCommit
 	commitOverlay *overlay.TextInputOverlay
 }
@@ -407,7 +413,7 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 
 	m.tabbedWindow.SetSize(tabsWidth, contentHeight)
 	m.list.SetSize(listWidth, contentHeight)
-	m.sourceControl.SetSize(scWidth, contentHeight-dockBoxHeight(contentHeight, m.dockHidden))
+	m.layoutLeft()
 	if m.commitOverlay != nil {
 		m.commitOverlay.SetSize(int(float32(msg.Width)*0.5), int(float32(msg.Height)*0.3))
 	}
@@ -439,6 +445,8 @@ func (m *home) Init() tea.Cmd {
 		m.refreshSourceControl(),
 		scTick(),
 		usageTick(),
+		refreshServers(),
+		serversTick(serversEvery),
 	)
 }
 
@@ -514,6 +522,7 @@ func (m *home) restartIfReady() tea.Cmd {
 }
 
 func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	defer watchUpdate(msg)() // lag watchdog (watchdog.go)
 	switch msg := msg.(type) {
 	case hideErrMsg:
 		m.errBox.Clear()
@@ -557,6 +566,10 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, usageTick()
 	case issueTickMsg:
 		return m, m.stepIssues()
+	case serversTickMsg:
+		return m, tea.Batch(refreshServers(), serversTick(serversEvery))
+	case serversMsg:
+		return m, m.applyServers(msg)
 	case scTickMsg:
 		return m, tea.Batch(m.refreshSourceControl(), scTick())
 	case scStatusMsg:
@@ -565,7 +578,18 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.root == m.projectTabs.Active() {
 			m.sourceControl.SetStatus(msg.root, msg.branch, msg.files, msg.autoCommit, msg.err)
 		}
+		if m.bar.sync == nil {
+			m.bar.sync = map[string]git.SyncState{}
+		}
+		m.bar.sync[msg.root] = msg.sync
+		return m, m.refreshPR(msg.root, msg.branch)
+	case prMsg:
+		m.applyPR(msg)
 		return m, nil
+	case pushStartMsg:
+		return m, m.startPush(msg.root)
+	case pushDoneMsg:
+		return m, m.pushDone(msg)
 	case scActionDoneMsg:
 		return m, tea.Sequence(m.refreshSourceControl(), func() tea.Msg { return scRefreshDiffMsg{} })
 	case scRefreshDiffMsg:
@@ -678,6 +702,12 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.switchProject(msg.path)
 	case tea.MouseMsg:
 		// Clicks on the project tab row: switch tab or add a project.
+		// Clicks on the status bar (the last row).
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft && msg.Y == m.screenHeight-1 && m.state == stateDefault {
+			if cmd, ok := m.clickBottomRow(msg.X); ok {
+				return m, cmd
+			}
+		}
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft && msg.Y == 0 && m.state == stateDefault {
 			switch hit := m.projectTabs.HitTest(msg.X); {
 			case hit == ui.HitAddProject:
@@ -686,6 +716,9 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.switchProject(m.projectTabs.Select(hit))
 			}
 			return m, nil
+		}
+		if cmd, ok := m.handleServersMouse(msg); ok {
+			return m, cmd
 		}
 		if cmd, ok := m.handleDockMouse(msg); ok {
 			return m, cmd
@@ -737,7 +770,9 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.justClosed == nil {
 			m.justClosed = map[string]time.Time{}
 		}
-		m.justClosed[msg.name] = time.Now()
+		for _, k := range closedKeys(msg.name, msg.sessionID, msg.pid) {
+			m.justClosed[k] = time.Now()
+		}
 		m.setExternalSessions(m.list.ExternalSessions())
 		delete(m.tileCache, "session:"+msg.name)
 		// Rebuild the grid now, even if a capture is running (its stale
@@ -849,6 +884,12 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	// Ctrl+] command key works from anywhere on the main screen.
 	if m.state == stateDefault {
 		if m.leader {
+			if msg.String() == leaderSpace {
+				// Terminal.app can deliver one Ctrl+Space as two key events;
+				// a repeat keeps command mode on instead of cancelling it.
+				logEvent("command key: repeated ⌃Space ignored")
+				return m, nil
+			}
 			return m, m.handleLeader(msg)
 		}
 		if isLeaderKey(msg.String()) {
@@ -866,6 +907,9 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	}
 	if m.state == stateIssuePicker {
 		return m, m.handleIssuePickerKey(msg)
+	}
+	if m.serversFocused && m.state == stateDefault {
+		return m, m.handleServersKey(msg)
 	}
 	if m.sourceControl.Focused() && m.state == stateDefault {
 		if cmd, ok := m.handleSourceControlKey(msg); ok {
@@ -1393,10 +1437,15 @@ func (m *home) setExternalSessions(sessions []*session.ExternalSession) {
 	if len(m.justClosed) > 0 {
 		kept := sessions[:0:0]
 		for _, e := range sessions {
-			if at, ok := m.justClosed[e.Name]; ok && time.Since(at) < justClosedFor {
-				continue
+			hidden := false
+			for _, k := range closedKeys(e.Name, e.SessionID, e.Pid) {
+				if at, ok := m.justClosed[k]; ok && time.Since(at) < justClosedFor {
+					hidden = true
+				}
 			}
-			kept = append(kept, e)
+			if !hidden {
+				kept = append(kept, e)
+			}
 		}
 		sessions = kept
 	}
@@ -1526,6 +1575,7 @@ func (m *home) switchProject(project string) tea.Cmd {
 		return nil
 	}
 	m.list.SetProject(project)
+	m.layoutLeft() // each project has its own servers list
 	if cached, ok := m.scCache[project]; ok {
 		m.sourceControl.SetStatus(cached.root, cached.branch, cached.files, cached.autoCommit, cached.err)
 	} else {
@@ -1897,9 +1947,15 @@ func (m *home) View() string {
 	}
 	m.skipRender = false
 	started := time.Now()
+	done := watchBegin("View")
 	defer func() {
+		done()
+		d := time.Since(started)
 		perf.renders.Add(1)
-		perf.renderNanos.Add(int64(time.Since(started)))
+		perf.renderNanos.Add(int64(d))
+		if d > slowFrame {
+			logEvent("slow frame: View took %s", d.Round(time.Millisecond))
+		}
 	}()
 	m.lastView = onBlack(m.view(), m.winW, m.winH)
 	return m.highlightSelection(m.lastView)
@@ -1928,7 +1984,7 @@ func (m *home) view() string {
 	}
 
 	scWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(
-		lipgloss.JoinVertical(lipgloss.Left, m.sourceControl.String(), m.renderDock()))
+		lipgloss.JoinVertical(lipgloss.Left, nonEmpty(m.sourceControl.String(), m.renderServers(), m.renderDock())...))
 	previewWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.tabbedWindow.String())
 	if !m.sourceControl.Focused() {
 		previewWithPadding = m.renderGridCached()
@@ -1945,9 +2001,12 @@ func (m *home) view() string {
 		m.projectTabs.String(),
 		listAndPreview,
 		" "+m.keyBar(m.screenWidth-2),
-		m.errBox.String(),
+		m.statusRow(m.screenWidth),
 	)
 
+	if m.leader && m.state == stateDefault {
+		return m.placeCentered(m.leaderMenu(), mainView)
+	}
 	if m.state == statePrompt {
 		if m.textInputOverlay == nil {
 			log.ErrorLog.Printf("text input overlay is nil")
