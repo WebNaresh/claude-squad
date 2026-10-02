@@ -444,6 +444,7 @@ func (m *home) Init() tea.Cmd {
 		m.updateCheck(),
 		m.refreshSourceControl(),
 		scTick(),
+		keyboardCheck(),
 		usageTick(),
 		refreshServers(),
 		serversTick(serversEvery),
@@ -570,6 +571,14 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(refreshServers(), serversTick(serversEvery))
 	case serversMsg:
 		return m, m.applyServers(msg)
+	case keyboardCheckMsg:
+		for _, name := range msg.repaired {
+			logEvent("keyboard restored: %s had fallen back to line mode under Claude", name)
+		}
+		if len(msg.repaired) > 0 {
+			return m, tea.Batch(keyboardCheck(), m.handleError(fmt.Errorf("fixed the keyboard of %s: Enter works again", strings.Join(msg.repaired, ", "))))
+		}
+		return m, keyboardCheck()
 	case scTickMsg:
 		return m, tea.Batch(m.refreshSourceControl(), scTick())
 	case scStatusMsg:
