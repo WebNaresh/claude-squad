@@ -225,8 +225,18 @@ type home struct {
 	// servers are the listening ports, with the tile that started each (servers.go)
 	servers        []session.Server
 	serversFocused bool
-	serverCursor   int
-	dockCapturing  bool
+	// Auto issue loop (autoissues.go): autoDeclined is how many sessions ran
+	// when its offer was declined, autoFetched when the issue list was last
+	// loaded for it, autoSaid the last message shown, autoPrompt the project
+	// of the picker it opened.
+	autoDeclined map[string]int
+	autoFetched  map[string]time.Time
+	autoSaid     map[string]string
+	autoPrompt   string
+	// progress counts finished sessions per day for the strip above the tiles
+	progress      *progressData
+	serverCursor  int
+	dockCapturing bool
 	// lastSessions/lastAgents are what the last refresh saw (for the activity log)
 	lastSessions map[string]string
 	lastAgents   map[string]string
@@ -282,6 +292,7 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 	h.fitted = map[string]string{}
 	h.dockNames = map[string]string{}
 	h.dockShots = map[string]dockCapturedMsg{}
+	h.progress = loadProgress()
 	h.sourceControl = ui.NewSourceControl()
 	h.scLoading = map[string]bool{}
 	h.scCache = map[string]scStatusMsg{}
@@ -448,6 +459,7 @@ func (m *home) Init() tea.Cmd {
 		usageTick(),
 		refreshServers(),
 		serversTick(serversEvery),
+		autoTick(),
 	)
 }
 
@@ -567,6 +579,8 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, usageTick()
 	case issueTickMsg:
 		return m, m.stepIssues()
+	case autoTickMsg:
+		return m, m.stepAuto()
 	case serversTickMsg:
 		return m, tea.Batch(refreshServers(), serversTick(serversEvery))
 	case serversMsg:
@@ -778,6 +792,9 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case externalClosedMsg:
 		if m.justClosed == nil {
 			m.justClosed = map[string]time.Time{}
+		}
+		if msg.finished && msg.project != "" && m.progress != nil {
+			m.progress.addDone(msg.project)
 		}
 		for _, k := range closedKeys(msg.name, msg.sessionID, msg.pid) {
 			m.justClosed[k] = time.Now()
