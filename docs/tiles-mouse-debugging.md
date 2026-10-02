@@ -77,6 +77,18 @@ Profiles → (their profile) → Keyboard → "+":
 | ↑ Cursor Up | Shift | Send Text | `\033[1;2A` |
 | ↓ Cursor Down | Shift | Send Text | `\033[1;2B` |
 
+## "cs froze / lagged for a few seconds"
+
+- `grep -E "UI STALL|UI FLOOD|slow frame" ~/.claude-squad/activity.log`
+  (`app/watchdog.go`). A stall (one message or frame over 0.5s) also writes
+  every goroutine's stack to `~/.claude-squad/stalls.log`; the UI goroutine's
+  stack names the blocking call. A flood (>60 messages/s) lists them by type.
+- `~/.claude-squad/usage.log` every 30s: cs CPU, `renders=N/30s avg=…` and the
+  Mac's load. Load far above the core count (20–30 with ~30 Claude processes)
+  slows everything, cs included.
+- Known cause, fixed: trackpad scroll bursts (2,000+ wheel events in two
+  minutes) each drew a frame; wheel events now skip the redraw.
+
 ## Debugging what the user saw
 
 1. **Is the user on your build?** Self-update waits while `~/.claude-squad/hold-update`
