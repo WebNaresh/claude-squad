@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -68,7 +70,14 @@ func (m *home) openIssuePicker() tea.Cmd {
 // newIssuePicker opens the picker on project, showing its last issue list
 // at once (if any) while the fresh one loads.
 func (m *home) newIssuePicker(project string) {
+	m.newIssuePickerTicking(project, 0, "")
+}
+
+// newIssuePickerTicking opens the picker ticking tick issues (0: the
+// default), with a note from the auto loop (autoissues.go).
+func (m *home) newIssuePickerTicking(project string, tick int, note string) {
 	m.issuePicker = ui.NewIssuePicker(project, projectNames(m.projectTabs.Projects())[project])
+	m.issuePicker.TickLimit, m.issuePicker.Auto, m.issuePicker.AutoOn = tick, note, m.autoOn(project)
 	m.issuePicker.SetSize(m.screenWidth, m.screenHeight)
 	m.issuePicker.SetSkipped(readSkipped(project))
 	m.issuePicker.NewestFirst = readPrefs(project).NewestFirst
@@ -237,6 +246,11 @@ func (m *home) handleIssuePickerKey(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 	}
+	if msg.String() == "a" {
+		m.toggleAuto(p.Project)
+		p.AutoOn = m.autoOn(p.Project)
+		return nil
+	}
 	if msg.String() == "s" && !p.Loading {
 		p.ToggleOrder()
 		writePrefs(p.Project, issuePrefs{NewestFirst: p.NewestFirst})
@@ -251,6 +265,7 @@ func (m *home) handleIssuePickerKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	m.issuePicker = nil
 	m.state = stateDefault
+	m.autoPickerClosed(p.Project, start)
 	if !start {
 		return nil
 	}
@@ -305,6 +320,14 @@ func (m *home) stepIssues() tea.Cmd {
 	case time.Since(j.started) > issueJobTimeout:
 		m.issueJob = nil
 		return tea.Batch(m.handleError(fmt.Errorf("issue #%d is taking long; it stays in its session, moving on", j.issue.Number)), m.issueTick(0))
+	case strings.HasPrefix(line, "#") || strings.HasPrefix(line, "▶"):
+		// gai's "Multiple open PRs — select one" list (its last line is a
+		// list row): pick the PR this project's issues go to.
+		if j.answered != "pr" {
+			if cmd := m.pickPR(j); cmd != nil {
+				return tea.Batch(cmd, m.issueTick(time.Second))
+			}
+		}
 	case isGaiPrompt(line) && line != j.answered:
 		j.answered = line
 		if strings.Contains(line, "Rewrite the PR title and body") && m.moreQueuedIn(j.project) {
@@ -343,4 +366,61 @@ func (m *home) moreQueuedIn(project string) bool {
 		}
 	}
 	return false
+}
+
+// prRowRe matches a row of gai's PR list: "  ▶ #2305: title [3 issues]".
+var prRowRe = regexp.MustCompile(`^\s*(▶)?\s*#(\d+):`)
+
+// pickPR answers gai's "Multiple open PRs — select one" for an issue job:
+// the PR this project's auto issues went to before (the open PR with the
+// most of its issues, under the limit). It moves gai's cursor there and
+// presses Enter. With no such PR in the list it leaves the question for the
+// user (the tile waits, the job times out and the queue moves on).
+func (m *home) pickPR(j *issueJob) tea.Cmd {
+	screen := session.PaneScreen(j.name)
+	if !strings.Contains(screen, "Multiple open PRs") {
+		return nil
+	}
+	target := 0
+	if room, pr := prRoom(m.issueCache[j.project]); pr > 0 && room > 0 {
+		target = pr
+	}
+	cursor, at := -1, -1
+	row := 0
+	for _, l := range strings.Split(screen, "\n") {
+		mm := prRowRe.FindStringSubmatch(l)
+		if mm == nil {
+			continue
+		}
+		if mm[1] != "" {
+			cursor = row
+		}
+		if n, _ := strconv.Atoi(mm[2]); n == target {
+			at = row
+		}
+		row++
+	}
+	j.answered = "pr"
+	if target == 0 || at < 0 || cursor < 0 {
+		logEvent("issue queue: #%d gai asks which PR; no PR of this project's issues in its list, left to you", j.issue.Number)
+		return m.handleError(fmt.Errorf("issue #%d: gai asks which PR to use; pick one in its tile", j.issue.Number))
+	}
+	key := "Down"
+	if at < cursor {
+		key = "Up"
+	}
+	var keys []string
+	for i := 0; i < abs(at-cursor); i++ {
+		keys = append(keys, key)
+	}
+	_ = session.SendKeys(j.name, append(keys, "Enter")...)
+	logEvent("issue queue: #%d picked PR #%d in gai's list (%d %s)", j.issue.Number, target, abs(at-cursor), key)
+	return nil
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
