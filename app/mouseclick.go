@@ -14,7 +14,9 @@ import (
 // Mouse in the grid (mouse capture on, the default): a click focuses the tile
 // under it, and a click on an image Claude sent ("[image] /path/x.png") opens
 // all the session's images on one page in Chrome, at that image (gallery.go),
-// since Terminal.app can't show images or follow the wrapped path itself. The wheel scrolls the tile under the pointer.
+// since Terminal.app can't show images or follow the wrapped path itself. A
+// click on any other file path opens that file (openpath.go). The wheel
+// scrolls the tile under the pointer.
 
 // gridHit is the tile under a screen cell.
 type gridHit struct {
@@ -22,6 +24,7 @@ type gridHit struct {
 	row        int      // content row inside the tile (-1: border or title)
 	lines      []string // the tile's content rows as plain text
 	x0, y0, w0 int
+	textTop    int // screen row of lines[0]
 }
 
 // hitGrid finds the tile at screen cell (x, y), reading the tile layout the
@@ -56,6 +59,7 @@ func (m *home) hitGrid(x, y int) (gridHit, bool) {
 	for sy := first; sy <= last && sy < len(screen); sy++ {
 		h.lines = append(h.lines, ansi.Strip(ansi.Cut(screen[sy], h.x0+2, h.x0+tileW-2)))
 	}
+	h.textTop = first
 	h.row = y - first
 	if h.row < 0 || h.row >= len(h.lines) {
 		h.row = -1
@@ -65,7 +69,30 @@ func (m *home) hitGrid(x, y int) (gridHit, bool) {
 
 // handleGridMouse handles clicks and the wheel over the grid.
 func (m *home) handleGridMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
-	if m.state != stateDefault || msg.Action != tea.MouseActionPress {
+	if m.state != stateDefault {
+		return nil, false
+	}
+	if m.sel.active {
+		switch msg.Action {
+		case tea.MouseActionMotion:
+			m.moveSelection(msg.X, msg.Y)
+			return nil, true
+		case tea.MouseActionRelease:
+			if m.sel.dragged {
+				return m.finishSelection(), true
+			}
+			// No drag: a click. Open the image or path under it, but only
+			// in a tile that already had focus: a click meant to focus a
+			// tile (to type) once landed on an image line, opened Chrome and
+			// took the keyboard away.
+			m.sel.active = false
+			if !m.sel.wasFocused {
+				return nil, true
+			}
+			return m.clickAt(m.sel.pressHit, m.sel.ext), true
+		}
+	}
+	if msg.Action != tea.MouseActionPress {
 		return nil, false
 	}
 	hit, ok := m.hitGrid(msg.X, msg.Y)
@@ -111,19 +138,35 @@ func (m *home) handleGridMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
 		return nil, false
 	}
 
+	wasFocused := rowKey(entry.Instance, entry.External) == m.selectedRowKey()
 	// Focus the clicked tile.
 	if entry.Instance != nil {
 		m.list.SelectInstance(entry.Instance)
 	} else if entry.External != nil {
 		m.list.SelectExternal(entry.External.Name)
 	}
-	cmds := []tea.Cmd{m.autoFocus()}
-	if e := entry.External; e != nil && hit.row >= 0 {
-		if file := imageAt(hit.lines, hit.row, e); file != "" {
-			cmds = append(cmds, openGallery(e, file))
-		}
+	// Start a selection; letting go without dragging makes it a click
+	// (clickAt). Any earlier highlight goes.
+	m.sel = tileSelection{}
+	if hit.row >= 0 {
+		m.startSelection(msg.X, msg.Y, hit)
+		m.sel.ext, m.sel.wasFocused = entry.External, wasFocused
 	}
-	return tea.Batch(cmds...), true
+	return m.autoFocus(), true
+}
+
+// clickAt opens the image or file path under a click in a tile's text.
+func (m *home) clickAt(hit gridHit, e *session.ExternalSession) tea.Cmd {
+	if e == nil || hit.row < 0 {
+		return nil
+	}
+	if file := imageAt(hit.lines, hit.row, e); file != "" {
+		return openGallery(e, file)
+	}
+	if p := pathAt(hit.lines, hit.row, e.Path); p != "" {
+		return openPath(p)
+	}
+	return nil
 }
 
 // imageAt returns the sent image shown at content row row, or "". Claude
