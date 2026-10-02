@@ -182,8 +182,11 @@ func (m *home) renderProgress(width int) string {
 	if st := m.progress.streak(); st > 0 {
 		parts = append(parts, progFire.Render(fmt.Sprintf("🔥 %d-day streak", st)))
 	}
-	if !m.autoOn(project) {
+	switch {
+	case !m.autoOn(project):
 		parts = append(parts, progDimNote.Render("auto off"))
+	case daemonRunning():
+		parts = append(parts, progGood.Render("⟳ auto"))
 	}
 	line := " " + strings.Join(parts, sep)
 
