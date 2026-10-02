@@ -24,8 +24,12 @@ var (
 	programFlag string
 	autoYesFlag bool
 	daemonFlag  bool
-	binName     string
-	rootCmd     = &cobra.Command{
+	// issuesDaemonFlag runs the background issue runner (app/issuesdaemon.go);
+	// installIssuesFlag registers it to start at login.
+	issuesDaemonFlag  bool
+	installIssuesFlag bool
+	binName           string
+	rootCmd           = &cobra.Command{
 		Use:   "claude-squad",
 		Short: "Claude Squad - Manage multiple AI agents like Claude Code, Aider, Codex, and Amp.",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -33,6 +37,12 @@ var (
 			log.Initialize(daemonFlag)
 			defer log.Close()
 
+			if issuesDaemonFlag {
+				return app.RunIssuesDaemon()
+			}
+			if installIssuesFlag {
+				return app.InstallIssuesDaemon()
+			}
 			if daemonFlag {
 				cfg := config.LoadConfig()
 				err := daemon.RunDaemon(cfg)
@@ -185,6 +195,8 @@ func init() {
 		" and runs autoyes mode on them.")
 
 	// Hide the daemonFlag as it's only for internal use
+	rootCmd.Flags().BoolVar(&issuesDaemonFlag, "issues-daemon", false, "Run the background issue runner (started at login)")
+	rootCmd.Flags().BoolVar(&installIssuesFlag, "install-issues-daemon", false, "Start the background issue runner at every login")
 	err := rootCmd.Flags().MarkHidden("daemon")
 	if err != nil {
 		panic(err)
