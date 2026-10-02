@@ -47,6 +47,9 @@ func (h helpTypeGeneral) toContent() string {
 		k("⌃Space ← →", "previous / next project"),
 		k("⌃Space ↑ ↓", "previous / next session"),
 		k("mouse wheel", "scroll the tile you're in"),
+		k("drag in a tile", "select text in that tile; letting go copies it"),
+		k("click an image", "all the session's images in the browser"),
+		k("⌃Space m", "mouse off: the terminal's own selection (m again: on)"),
 		"",
 		headerStyle.Render("⌃Space then a key")+keyDimHelp.Render("   Ctrl and Space, let go, then the key (Ctrl+] works too)"),
 		keyDimHelp.Render("the selected session"),
@@ -55,7 +58,8 @@ func (h helpTypeGeneral) toContent() string {
 		k("Y", "copy its whole text"),
 		k("!", "jump to a session waiting for you (❓)"),
 		keyDimHelp.Render("this project"),
-		k("T", "terminal tile"),
+		k("C", "new Claude session in this project"),
+		k("T", "terminal for dev servers, git, … (show / hide)"),
 		k("N", "start Claude sessions from GitHub issues"),
 		k("S", "source control: stage, discard, commit, diffs"),
 		k("A", "add another project (folder chooser)"),
@@ -132,9 +136,9 @@ func (h helpTypeInstanceCheckout) mask() uint32 {
 }
 
 var (
-	titleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("62"))
+	titleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#0078d4"))
 	headerStyle = lipgloss.NewStyle().Bold(true)
-	keyStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("62"))
+	keyStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#0078d4"))
 	descStyle   = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#333333", Dark: "#cccccc"})
 	keyDimHelp  = lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
 )
