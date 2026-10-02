@@ -35,6 +35,7 @@ type ProjectTabs struct {
 	active   int
 	counts   map[string]int
 	needs    map[string]int
+	free     map[string]int // auto issue loop: free session slots to fill
 	width    int
 	// spans holds each tab's [start, end) column from the last render, and
 	// addStart the column where the "+ add project" button begins.
@@ -43,7 +44,7 @@ type ProjectTabs struct {
 }
 
 func NewProjectTabs() *ProjectTabs {
-	return &ProjectTabs{counts: map[string]int{}, needs: map[string]int{}}
+	return &ProjectTabs{counts: map[string]int{}, needs: map[string]int{}, free: map[string]int{}}
 }
 
 func (t *ProjectTabs) SetWidth(width int) { t.width = width }
@@ -61,6 +62,10 @@ func (t *ProjectTabs) SetProjects(projects []string, active string) {
 
 // SetNeeds sets how many sessions in a project wait on the user.
 func (t *ProjectTabs) SetNeeds(project string, n int) { t.needs[project] = n }
+
+// SetFree sets how many issues the auto loop could start in a project now
+// (shown as "·2 free"; 0 hides it).
+func (t *ProjectTabs) SetFree(project string, n int) { t.free[project] = n }
 
 // SetCount sets the number of agents shown next to a project's name.
 func (t *ProjectTabs) SetCount(project string, n int) { t.counts[project] = n }
@@ -137,6 +142,9 @@ func (t *ProjectTabs) String() string {
 		}
 		if n := t.needs[p]; n > 0 {
 			label += fmt.Sprintf(" ❓%d", n)
+		}
+		if n := t.free[p]; n > 0 {
+			label += fmt.Sprintf(" ·%d free", n)
 		}
 		if i == t.active {
 			labels[i] = projectTabActiveStyle.Render(label)
