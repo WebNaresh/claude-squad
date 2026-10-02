@@ -72,15 +72,15 @@ func (pp *ProfilePicker) HasMultiple() bool {
 
 var (
 	ppLabelStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("62")).
+			Foreground(lipgloss.Color("#0078d4")).
 			Bold(true)
 
 	ppSelectedStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("62")).
+			Background(lipgloss.Color("#0078d4")).
 			Foreground(lipgloss.Color("0"))
 
 	ppDimStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240"))
+			Foreground(lipgloss.Color("#3c3c3c"))
 )
 
 // Render renders the profile picker.
