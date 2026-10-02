@@ -317,6 +317,7 @@ func (m *home) autoFocus() tea.Cmd {
 		}
 	}()
 	m.sessionFocus = ""
+	m.serversFocused = false
 	if m.sourceControl.Focused() || m.state != stateDefault {
 		return m.instanceChanged()
 	}
@@ -405,6 +406,7 @@ func (m *home) navKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 func (m *home) openSourceControl() tea.Cmd {
 	logEvent("source control focused")
 	m.sessionFocus = ""
+	m.serversFocused = false
 	m.sourceControl.SetFocused(true)
 	return m.showSelectedFileDiff()
 }
