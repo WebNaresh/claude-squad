@@ -18,6 +18,7 @@ import (
 // sessions, its open PR closing inPR issues, and `open` issues not in a PR.
 func autoHome(t *testing.T, running, inPR, open int) (*home, string) {
 	t.Helper()
+	daemonRunning = func() bool { return false } // not the user's real background runner
 	project := t.TempDir()
 	sp := spinner.New()
 	m := &home{ctx: context.Background(), state: stateDefault, appConfig: config.DefaultConfig(),
@@ -92,5 +93,15 @@ func TestAutoOtherTabGetsBadgeNotPicker(t *testing.T) {
 	}
 	if !strings.Contains(m.projectTabs.String(), "·2 free") {
 		t.Errorf("tab row %q has no ·2 free badge", m.projectTabs.String())
+	}
+}
+
+// A bot's PR (the GitHub Claude app's own fix) is never where this project's
+// issues are gathered, even when it closes the most issues.
+func TestPRRoomIgnoresBotPRs(t *testing.T) {
+	issues := []session.Issue{{Number: 1, PR: 2209, PRBot: true}, {Number: 2, PR: 2209, PRBot: true}, {Number: 3, PR: 2306}}
+	room, pr := prRoom(issues)
+	if pr != 2306 || room != autoMaxPerPR-1 {
+		t.Errorf("prRoom = room %d, PR #%d; want PR #2306 with room %d", room, pr, autoMaxPerPR-1)
 	}
 }
