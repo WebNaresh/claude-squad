@@ -116,3 +116,15 @@ func (m *home) newClaudeSession() tea.Cmd {
 		return sessionStartedMsg{name: name, sessions: list}
 	}
 }
+
+// keyboardCheckMsg reports Claude panes whose keyboard was restored.
+type keyboardCheckMsg struct{ repaired []string }
+
+// keyboardCheck looks every 5s for Claude panes that fell back to line mode
+// (Enter does nothing, "^[" echoed) and fixes them (session/keyboard.go).
+func keyboardCheck() tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(5 * time.Second)
+		return keyboardCheckMsg{repaired: session.RepairClaudeKeyboards()}
+	}
+}
