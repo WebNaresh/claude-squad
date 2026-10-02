@@ -94,6 +94,14 @@ func (m *home) refreshGrid() tea.Cmd {
 	}
 	tw, th := ui.GridTileSize(len(rows), m.paneWidth, m.contentHeight)
 	live := m.selectedLiveName()
+	// The same Claude conversation open in two tiles (resumed in a second
+	// one): both write to one transcript, so both tiles say so.
+	convs := map[string]int{}
+	for _, r := range rows {
+		if e := r.row.External; e != nil && e.SessionID != "" {
+			convs[e.SessionID]++
+		}
+	}
 	tiles := make([]ui.GridTile, len(rows))
 	var jobs []gridJob
 	for i, r := range rows {
@@ -115,6 +123,7 @@ func (m *home) refreshGrid() tea.Cmd {
 			tiles[i] = t
 		}
 		j := gridJob{idx: i, key: key, row: r.row, cursorFor: m.sessionFocus}
+		j.dup = r.row.External != nil && convs[r.row.External.SessionID] > 1
 		if cached && c.w == tw && c.h == th {
 			j.prev = c.tile.Content
 		}
@@ -170,6 +179,7 @@ type gridJob struct {
 	row       ui.Row
 	fit       bool
 	cursorFor string
+	dup       bool // its conversation is open in another tile too
 	md        *ui.MarkdownCache
 }
 
@@ -215,6 +225,9 @@ func captureTile(j gridJob, w, h int) ui.GridTile {
 	}
 	e := j.row.External
 	t := ui.GridTile{Title: e.Title(), NeedsYou: e.NeedsYou(), Status: e.Status, Stage: session.StagePhase(e.SessionID)}
+	if j.dup {
+		t.Stage = "⚠ same conversation open in 2 tiles · close one"
+	}
 	if e.Kind == session.KindTerminal {
 		md, version := e.Conversation()
 		t.Status = "view only"
@@ -489,12 +502,15 @@ func (m *home) renderGridCached() string {
 		fmt.Fprintf(&b, "%s|%s|%v|%d|", t.Title, t.Status, t.NeedsYou, len(t.Content))
 		b.WriteString(t.Content)
 	}
+	// The progress strip sits in the row above the tiles (progress.go).
+	strip := m.renderProgress(m.paneWidth)
+	b.WriteString(strip)
 	key := b.String()
 	if key == m.gridRenderKey && m.gridRendered != "" {
 		return m.gridRendered
 	}
 	m.gridRenderKey = key
-	m.gridRendered = lipgloss.NewStyle().PaddingTop(1).Render(
+	m.gridRendered = lipgloss.JoinVertical(lipgloss.Left, strip,
 		ui.RenderGrid(m.gridTiles, m.gridFocus, m.paneWidth, m.contentHeight))
 	return m.gridRendered
 }
