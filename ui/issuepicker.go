@@ -39,11 +39,18 @@ type IssuePicker struct {
 	// NewestFirst lists (and ticks) the newest issues first instead of the
 	// oldest; s switches it, saved per project by the caller.
 	NewestFirst bool
-	selected    map[int]bool
-	cursor      int
-	scroll      int // preview scroll offset
-	width       int
-	height      int
+	// TickLimit is how many issues are ticked when the list arrives (0:
+	// IssuePickDefault). The auto loop sets it to the free session slots.
+	TickLimit int
+	// Auto says the auto loop opened the picker and why ("1 free slot …");
+	// AutoOn is whether the loop runs for this project (a switches it).
+	Auto     string
+	AutoOn   bool
+	selected map[int]bool
+	cursor   int
+	scroll   int // preview scroll offset
+	width    int
+	height   int
 }
 
 // NewIssuePicker opens the picker for a project while its issues load.
@@ -118,8 +125,12 @@ func (p *IssuePicker) SetIssues(issues []session.Issue, busy map[int]bool, err e
 // tickDefault ticks the first IssuePickDefault issues in list order that
 // have no session and weren't skipped.
 func (p *IssuePicker) tickDefault() {
+	limit := p.TickLimit
+	if limit <= 0 {
+		limit = IssuePickDefault
+	}
 	for _, is := range p.issues {
-		if len(p.selected) == IssuePickDefault {
+		if len(p.selected) == limit {
 			break
 		}
 		if !p.busy[is.Number] && !p.skipped[is.Number] {
@@ -212,14 +223,28 @@ func (p *IssuePicker) Render() string {
 	}
 	b.WriteString(ipTitleStyle.Render("Start Claude on issues") + "   project: " + ipTitleStyle.Render("‹ "+p.Name+" ›") + "   " + ipDimStyle.Render(order) + "\n")
 	b.WriteString(KeyRow("", []Key{{"enter", "start"}, {"esc", "cancel"}, {"space", "tick / skip"}, {"↑↓", "move"},
-		{"s", other}, {"←→", "project"}, {"o", "open"}, {"J/K", "scroll"}}, w-4) + "\n\n")
+		{"s", other}, {"←→", "project"}, {"o", "open"}, {"a", autoLabel(p.AutoOn)}, {"J/K", "scroll"}}, w-4) + "\n")
+	if p.Auto != "" {
+		b.WriteString(ipTitleStyle.Render("⟳ Auto: ") + p.Auto + "\n")
+	}
+	b.WriteString("\n")
+	// Loading, error and empty states take the full list's height too, so
+	// the picker doesn't jump when the list arrives.
+	avail := max(12, p.height-9)
+	full := strings.Count(b.String(), "\n") + avail + 1
+	fixed := func(s string) string {
+		if n := strings.Count(s, "\n") + 1; n < full {
+			s += strings.Repeat("\n", full-n)
+		}
+		return ipBoxStyle.Width(w).Render(s)
+	}
 	if p.Loading {
 		b.WriteString("Loading issues…")
-		return ipBoxStyle.Width(w).Render(b.String())
+		return fixed(b.String())
 	}
 	if p.Err != nil {
 		b.WriteString(p.Err.Error())
-		return ipBoxStyle.Width(w).Render(b.String())
+		return fixed(b.String())
 	}
 	if len(p.issues) == 0 {
 		if p.inPR > 0 {
@@ -227,13 +252,12 @@ func (p *IssuePicker) Render() string {
 		} else {
 			b.WriteString("No open issues.")
 		}
-		return ipBoxStyle.Width(w).Render(b.String())
+		return fixed(b.String())
 	}
 	// Rows left for the list and the issue text: the screen minus the border,
 	// the 3 header and 2 footer rows and a little margin. The list takes about
 	// 40% and the highlighted issue's text the rest.
-	avail := max(12, p.height-9)
-	room := min(len(p.issues), max(5, avail*2/5))
+	room := max(5, avail*2/5) // list rows; fixed, so the picker keeps its height
 	start := 0
 	if p.cursor >= room {
 		start = p.cursor - room + 1
@@ -268,6 +292,9 @@ func (p *IssuePicker) Render() string {
 		}
 		b.WriteString(line + "\n")
 	}
+	for i := len(p.issues) - start; i < room; i++ {
+		b.WriteString("\n") // fewer issues than rows: keep the list's height
+	}
 	b.WriteString(p.renderPreview(w-4, avail-room-1))
 	foot := fmt.Sprintf("%d ticked · each gets its own session running gai issue, one after another", len(p.Selected()))
 	if p.inPR > 0 {
@@ -301,6 +328,12 @@ func (p *IssuePicker) renderPreview(width, rows int) string {
 	out := append(head, shown...)
 	if rest := len(lines) - p.scroll - len(shown); rest > 0 {
 		out = append(out, ipDimStyle.Render(fmt.Sprintf("… %d more lines (J/K scroll, o open in browser)", rest)))
+	}
+	// Always the same height, whatever the issue's length: a short issue
+	// used to shrink the whole picker and a long one grow it, so it jumped
+	// on every ↑↓. Longer text scrolls (J/K).
+	for len(out) < rows {
+		out = append(out, "")
 	}
 	return "\n" + strings.Join(out, "\n")
 }
@@ -349,4 +382,12 @@ func ageString(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
+}
+
+// autoLabel is the a key's hint: what pressing it does.
+func autoLabel(on bool) string {
+	if on {
+		return "auto off"
+	}
+	return "auto on"
 }
