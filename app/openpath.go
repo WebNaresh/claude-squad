@@ -38,26 +38,58 @@ func pathAt(lines []string, row int, dir string) string {
 	var b strings.Builder
 	var rowOf []int
 	for r := lo; r <= hi; r++ {
-		t := strings.TrimSpace(lines[r])
+		t := wrapRow(lines[r])
 		b.WriteString(t)
 		for range len(t) {
 			rowOf = append(rowOf, r)
 		}
 	}
 	text := b.String()
-	for _, loc := range pathRe.FindAllStringIndex(text, -1) {
-		if rowOf[loc[0]] > row || rowOf[loc[1]-1] < row {
-			continue // not under the click
+	for start := 0; start < len(text); {
+		loc := pathRe.FindStringIndex(text[start:])
+		if loc == nil {
+			break
 		}
-		// Joining rows can glue the next word onto the path's end
-		// ("usage.sql" + "Crunched"); take the longest prefix that exists.
-		for end := loc[1]; end > loc[0]+1; end-- {
-			if p := resolvePath(strings.TrimRight(text[loc[0]:end], ".,:;)'\"`"), dir); p != "" {
-				return p
+		a, z := start+loc[0], start+loc[1]
+		if rowOf[a] > row {
+			break // starts below the click
+		}
+		// Joining rows can glue the next word, or the next listed file, onto
+		// the path's end; take the longest prefix that exists.
+		found, end := "", 0
+		for e := z; e > a+1; e-- {
+			if p := resolvePath(strings.TrimRight(text[a:e], ".,:;)'\"`"), dir); p != "" {
+				found, end = p, e
+				break
 			}
+		}
+		if found != "" && rowOf[end-1] >= row {
+			return found
+		}
+		// That path ended above the click: look at what follows it.
+		if found != "" {
+			start = end
+		} else {
+			start = z
 		}
 	}
 	return ""
+}
+
+// Claude prints a sent file's size at the right edge of its wrapped path
+// ("…-practice-stack (283.9K" / "[image] /3f69…/before-booking-det B)" /
+// "ails.png"), and labels the block "[image]" or "›". Those pieces would be
+// glued into the path when the rows are joined, so they are cut first.
+var (
+	sizeTailRe = regexp.MustCompile(`\s+(\(\d+(\.\d+)?\s*[KMGT]?B?\)?|[KMGT]?B\))$`)
+	blockHead  = regexp.MustCompile(`^(\[image\]|›|⎿)\s*`)
+)
+
+// wrapRow is one row of a wrapped path with the size and the label cut off.
+func wrapRow(l string) string {
+	t := strings.TrimSpace(l)
+	t = blockHead.ReplaceAllString(t, "")
+	return strings.TrimSpace(sizeTailRe.ReplaceAllString(t, ""))
 }
 
 func resolvePath(p, dir string) string {
@@ -87,8 +119,8 @@ func resolvePath(p, dir string) string {
 func openPath(p string) tea.Cmd {
 	return func() tea.Msg {
 		var cmd *exec.Cmd
-		if st, err := os.Stat(p); err == nil && st.IsDir() {
-			cmd = exec.Command("open", p)
+		if st, err := os.Stat(p); err == nil && (st.IsDir() || isImage(p)) {
+			cmd = exec.Command("open", p) // Finder, or Preview for an image
 		} else if code, err := exec.LookPath("code"); err == nil {
 			cmd = exec.Command(code, "-g", p)
 		} else {
@@ -100,4 +132,12 @@ func openPath(p string) tea.Cmd {
 		logEvent("opened %s", p)
 		return fmt.Errorf("opened %s", filepath.Base(p))
 	}
+}
+
+func isImage(p string) bool {
+	switch strings.ToLower(filepath.Ext(p)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".svg", ".pdf":
+		return true
+	}
+	return false
 }
