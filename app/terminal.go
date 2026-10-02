@@ -44,6 +44,8 @@ func (m *home) closeSession() tea.Cmd {
 		question = fmt.Sprintf("Close %s? Claude stops; the conversation can be resumed later.", name)
 		id, live := e.Name, e.Live
 		stop = func() error {
+			// Hide it first, or the next refresh re-attaches and so resumes it.
+			session.MarkClosed(id)
 			if out, err := exec.Command(session.RealClaude(), "stop", id).CombinedOutput(); err != nil {
 				return fmt.Errorf("%s", strings.TrimSpace(string(out)))
 			}
@@ -63,18 +65,38 @@ func (m *home) closeSession() tea.Cmd {
 		logEvent("session closed: %s", e.Name)
 		// Drop the tile now; reloading the session list first (claude agents)
 		// kept the dead tile on screen for a second or more.
-		return externalClosedMsg{name: e.Name}
+		return externalClosedMsg{name: e.Name, sessionID: e.SessionID, pid: e.Pid}
 	})
 	m.confirmationOverlay.ConfirmLabel = "Close"
 	return cmd
 }
 
-// externalClosedMsg names a tile that was just closed.
-type externalClosedMsg struct{ name string }
+// externalClosedMsg names a tile that was just closed, with its Claude
+// session id and process: after its tmux session is killed, Claude takes a
+// few seconds to exit, and meanwhile `claude agents` lists it again under
+// another name ("pid-123", own terminal), which brought the tile back.
+type externalClosedMsg struct {
+	name      string
+	sessionID string
+	pid       int
+}
 
 // justClosedFor is how long a closed session is kept out of the list, so a
-// status refresh that started before the close can't bring its tile back.
-const justClosedFor = 5 * time.Second
+// status refresh that started before the close, or Claude still exiting,
+// can't bring its tile back.
+const justClosedFor = 20 * time.Second
+
+// closedKeys are the keys a closed session is hidden by.
+func closedKeys(name, sessionID string, pid int) []string {
+	keys := []string{name}
+	if sessionID != "" {
+		keys = append(keys, "sid:"+sessionID)
+	}
+	if pid > 0 {
+		keys = append(keys, fmt.Sprintf("pid:%d", pid))
+	}
+	return keys
+}
 
 // newClaudeSession starts a new Claude session in the active project's
 // folder (no worktree, no branch); it shows up as a tile and gets focus.
