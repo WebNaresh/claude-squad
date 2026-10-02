@@ -47,3 +47,15 @@ func (e *ErrBox) String() string {
 	// Left-aligned under the key bar, so the eye finds it in the same place.
 	return lipgloss.Place(e.width, e.height, lipgloss.Left, lipgloss.Center, " "+errStyle.Render(err))
 }
+
+// Text is the message alone, cut to width, for the status bar.
+func (e *ErrBox) Text(width int, bg lipgloss.Color) string {
+	if e.err == nil || width < 4 {
+		return ""
+	}
+	msg := strings.Join(strings.Split(e.err.Error(), "\n"), "//")
+	if runewidth.StringWidth(msg) > width {
+		msg = runewidth.Truncate(msg, width, "…")
+	}
+	return errStyle.Background(bg).Render(msg)
+}
