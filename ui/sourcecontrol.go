@@ -11,11 +11,11 @@ import (
 )
 
 var (
-	scTitleStyle    = lipgloss.NewStyle().Background(lipgloss.Color("62")).Foreground(lipgloss.Color("230"))
+	scTitleStyle    = lipgloss.NewStyle().Background(lipgloss.Color("#0078d4")).Foreground(lipgloss.Color("#ffffff"))
 	scSectionStyle  = lipgloss.NewStyle().Bold(true)
 	scDimStyle      = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#777777"})
 	scWarnStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#e5a50a"))
-	scSelectedStyle = lipgloss.NewStyle().Background(lipgloss.Color("#dde4f0")).Foreground(lipgloss.Color("#1a1a1a"))
+	scSelectedStyle = lipgloss.NewStyle().Background(lipgloss.Color("#04395e")).Foreground(lipgloss.Color("#ffffff"))
 	scLetterColors  = map[byte]lipgloss.Color{
 		'M': "#e2c08d", 'A': "#73c991", 'D': "#c74e39", 'R': "#73c991", 'C': "#73c991", 'U': "#73c991", '?': "#73c991",
 	}
@@ -177,9 +177,9 @@ func (s *SourceControl) String() string {
 	}
 	body := strings.Join(append(head, lines...), "\n")
 
-	border, color := lipgloss.RoundedBorder(), lipgloss.Color("240")
+	border, color := lipgloss.RoundedBorder(), lipgloss.Color("#3c3c3c")
 	if s.focused {
-		border, color = lipgloss.ThickBorder(), lipgloss.Color("62")
+		border, color = lipgloss.ThickBorder(), lipgloss.Color("#0078d4")
 	}
 	box := lipgloss.NewStyle().Border(border, false, true, true, true).BorderForeground(color).
 		Padding(0, 1).Width(s.width - 2).Height(room).MaxHeight(room + 1).Render(body)
