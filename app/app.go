@@ -26,6 +26,12 @@ import (
 
 const GlobalInstanceLimit = 10
 
+// DECAWM: the terminal's automatic wrap at the right margin.
+const (
+	autoWrapOff = "\x1b[?7l"
+	autoWrapOn  = "\x1b[?7h"
+)
+
 // Run is the main entrypoint into the application.
 // It returns ErrRestart when cs quit to restart itself on a newer build.
 func Run(ctx context.Context, program string, autoYes bool) error {
@@ -35,6 +41,9 @@ func Run(ctx context.Context, program string, autoYes bool) error {
 	// as usual (full-screen drawing never leaves stray lines), and the first
 	// frame is the previous process's saved screen, so the switch is one frame.
 	restarted := os.Getenv(restartedEnv) == "1"
+	// cs never restarts in place while an issue queue runs, so any
+	// "queued" issue session now is left from a quit mid-queue.
+	session.CloseStaleQueuedIssues()
 	os.Unsetenv(restartedEnv)
 	opts := []tea.ProgramOption{tea.WithAltScreen()}
 	// Mouse capture is on by default (click tiles, tabs and images, wheel
@@ -43,7 +52,14 @@ func Run(ctx context.Context, program string, autoYes bool) error {
 		opts = append(opts, tea.WithMouseCellMotion())
 	}
 	p := tea.NewProgram(h, opts...)
+	// Auto-wrap off while cs draws. Some characters (⚠️ and other emoji)
+	// are drawn wider by the terminal than cs measures them; with wrapping on,
+	// such a row spills onto the next one, every row below shifts down, and
+	// the renderer (which only redraws changed rows) leaves old text behind.
+	// With it off, the row's last column is clipped instead.
+	fmt.Print(autoWrapOff)
 	_, err := p.Run()
+	fmt.Print(autoWrapOn)
 	if restarted {
 		// The raw mode inherited from the previous process was recorded as
 		// "normal" and restored on exit; put the terminal back to normal mode.
@@ -177,6 +193,9 @@ type home struct {
 	// gridRenderKey/gridRendered cache the drawn grid
 	gridRenderKey string
 	gridRendered  string
+	// gridKeys names the sessions gridTiles shows, in order; a different
+	// list (another tab) is redrawn from tileCache at once
+	gridKeys string
 	// issuePicker is the ⌥N picker; issueQueue/issueJob start the picked
 	// issues' sessions one after another
 	issuePicker *ui.IssuePicker
@@ -186,12 +205,23 @@ type home struct {
 	// needsSeen holds the sessions known to wait on the user (to spot new
 	// questions); questionJumped the ones focus already moved to once;
 	// lastKey is the time of the last key press
+	sel            tileSelection        // mouse text selection in a tile (selection.go)
+	justClosed     map[string]time.Time // tiles closed a moment ago (closeSession)
 	needsSeen      map[string]bool
 	questionJumped map[string]bool
 	lastKey        time.Time
 	gridMarkdown   map[string]*ui.MarkdownCache
 	// paneWidth is the width of the session pane / grid area
 	paneWidth int
+	// leftWidth is the width of the Source Control + dock column. dockNames
+	// is each project's docked terminal; dockHidden folds it to one status
+	// line; dockShots keeps each dock's last capture, so a tab switch shows
+	// its terminal at once (dock.go).
+	leftWidth     int
+	dockNames     map[string]string
+	dockHidden    bool
+	dockShots     map[string]dockCapturedMsg
+	dockCapturing bool
 	// lastSessions/lastAgents are what the last refresh saw (for the activity log)
 	lastSessions map[string]string
 	lastAgents   map[string]string
@@ -244,6 +274,8 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 	h.list = ui.NewList(&h.spinner, autoYes)
 	h.updater = newUpdater()
 	h.fitted = map[string]string{}
+	h.dockNames = map[string]string{}
+	h.dockShots = map[string]dockCapturedMsg{}
 	h.sourceControl = ui.NewSourceControl()
 	h.scLoading = map[string]bool{}
 	h.scCache = map[string]scStatusMsg{}
@@ -351,10 +383,10 @@ func containsString(list []string, s string) bool {
 // The components will try to render inside their bounds.
 func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	m.winW, m.winH = msg.Width, msg.Height // the real window size
-	// Source Control is an occasional task: about a fifth of the width, at
-	// least enough for "name  folder  M" and at most 40 columns; the session
-	// tiles get the rest.
-	scWidth := max(28, min(40, msg.Width/5))
+	// The left column holds Source Control and, under it, the project's
+	// docked terminal; the session tiles get the rest.
+	scWidth := leftColumnWidth(msg.Width)
+	m.leftWidth = scWidth
 	// No session list column: the grid tiles (or the single session's title)
 	// name the sessions, and Ctrl+] / Shift+arrows move between them.
 	listWidth := 0
@@ -375,7 +407,7 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 
 	m.tabbedWindow.SetSize(tabsWidth, contentHeight)
 	m.list.SetSize(listWidth, contentHeight)
-	m.sourceControl.SetSize(scWidth, contentHeight)
+	m.sourceControl.SetSize(scWidth, contentHeight-dockBoxHeight(contentHeight, m.dockHidden))
 	if m.commitOverlay != nil {
 		m.commitOverlay.SetSize(int(float32(msg.Width)*0.5), int(float32(msg.Height)*0.3))
 	}
@@ -485,6 +517,9 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case hideErrMsg:
 		m.errBox.Clear()
+	case dockCapturedMsg:
+		m.applyDockCapture(msg)
+		return m, nil
 	case gridCapturedMsg:
 		m.applyGridCapture(msg)
 		if m.sessionsLoaded && !m.ready {
@@ -498,6 +533,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(
 			cmd,
 			m.refreshGrid(),
+			m.refreshDock(),
 			func() tea.Msg {
 				time.Sleep(interval)
 				return previewTickMsg{}
@@ -627,7 +663,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionStartedMsg:
 		m.setExternalSessions(msg.sessions)
 		m.list.SelectExternal(msg.name)
-		return m, m.instanceChanged()
+		return m, tea.Batch(m.instanceChanged(), m.autoFocus())
 	case projectChosenMsg:
 		if msg.err != nil {
 			return m, m.handleError(msg.err)
@@ -650,6 +686,9 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.switchProject(m.projectTabs.Select(hit))
 			}
 			return m, nil
+		}
+		if cmd, ok := m.handleDockMouse(msg); ok {
+			return m, cmd
 		}
 		if cmd, ok := m.handleGridMouse(msg); ok {
 			return m, cmd
@@ -695,8 +734,16 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle errors from confirmation actions
 		return m, m.handleError(msg)
 	case externalClosedMsg:
-		m.setExternalSessions(msg.list)
-		return m, m.autoFocus()
+		if m.justClosed == nil {
+			m.justClosed = map[string]time.Time{}
+		}
+		m.justClosed[msg.name] = time.Now()
+		m.setExternalSessions(m.list.ExternalSessions())
+		delete(m.tileCache, "session:"+msg.name)
+		// Rebuild the grid now, even if a capture is running (its stale
+		// result is dropped in applyGridCapture).
+		m.gridCapturing = false
+		return m, tea.Batch(m.autoFocus(), m.refreshGrid())
 	case instanceChangedMsg:
 		// Handle instance changed after confirmation action
 		return m, m.instanceChanged()
@@ -786,7 +833,13 @@ func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly 
 }
 
 func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
+	if !m.appConfig.MouseOff && isMouseFragment(msg) {
+		// Pieces of a mouse event split across reads: never type them.
+		logEvent("dropped a split mouse event (%d chars)", len(msg.Runes))
+		return m, nil
+	}
 	m.lastKey = time.Now()
+	m.sel.shown = false // a key press clears the selection highlight
 	// Keys typed into a session are in keys.log already; describing the full
 	// state for each of them (hundreds a second when scrolling) costs CPU.
 	if m.sessionFocus == "" || m.state != stateDefault {
@@ -1090,16 +1143,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 	switch name {
 	case keys.KeySession:
-		project := m.projectTabs.Active()
-		program := m.program
-		return m, func() tea.Msg {
-			name, err := session.StartSession(project, program)
-			if err != nil {
-				return err
-			}
-			list, _, _ := session.ListExternalSessions()
-			return sessionStartedMsg{name: name, sessions: list}
-		}
+		return m, m.newClaudeSession()
 	case keys.KeyHelp:
 		return m.showHelpScreen(helpTypeGeneral{}, nil)
 	case keys.KeyPrompt:
@@ -1346,6 +1390,16 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 // project that has one a tab so nothing running is hidden. Sessions outside
 // any git repository are listed under no tab.
 func (m *home) setExternalSessions(sessions []*session.ExternalSession) {
+	if len(m.justClosed) > 0 {
+		kept := sessions[:0:0]
+		for _, e := range sessions {
+			if at, ok := m.justClosed[e.Name]; ok && time.Since(at) < justClosedFor {
+				continue
+			}
+			kept = append(kept, e)
+		}
+		sessions = kept
+	}
 	if m.repoRoots == nil {
 		m.repoRoots = map[string]string{}
 	}
@@ -1488,7 +1542,8 @@ func (m *home) switchProject(project string) tea.Cmd {
 	if err := config.SaveConfig(m.appConfig); err != nil {
 		log.WarningLog.Printf("failed to save active project: %v", err)
 	}
-	return tea.Batch(m.instanceChanged(), refresh)
+	// Redraw the grid for the new tab now (from cache), not on the next tick.
+	return tea.Batch(m.instanceChanged(), refresh, m.refreshGrid(), m.refreshDock())
 }
 
 // jumpToNeedsYou selects the next session waiting on the user, switching
@@ -1563,7 +1618,7 @@ func (m *home) closeActiveProject() tea.Cmd {
 	if n > 0 {
 		return m.handleError(fmt.Errorf("%s still has %d agent(s); delete them (D) before closing the tab", name, n))
 	}
-	if e := m.list.CountExternalInProject(project); e > 0 {
+	if e := m.externalCount(project); e > 0 {
 		return m.handleError(fmt.Errorf("%s has %d Claude session(s) running; the tab closes once they end", name, e))
 	}
 	if len(m.projectTabs.Projects()) == 1 {
@@ -1846,8 +1901,8 @@ func (m *home) View() string {
 		perf.renders.Add(1)
 		perf.renderNanos.Add(int64(time.Since(started)))
 	}()
-	m.lastView = m.view()
-	return m.lastView
+	m.lastView = onBlack(m.view(), m.winW, m.winH)
+	return m.highlightSelection(m.lastView)
 }
 
 func (m *home) view() string {
@@ -1868,11 +1923,12 @@ func (m *home) view() string {
 		}
 	}
 	for _, p := range m.projectTabs.Projects() {
-		m.projectTabs.SetCount(p, m.list.CountInProject(p)+m.list.CountExternalInProject(p))
+		m.projectTabs.SetCount(p, m.list.CountInProject(p)+m.externalCount(p))
 		m.projectTabs.SetNeeds(p, m.list.CountNeedsInProject(p))
 	}
 
-	scWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.sourceControl.String())
+	scWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(
+		lipgloss.JoinVertical(lipgloss.Left, m.sourceControl.String(), m.renderDock()))
 	previewWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.tabbedWindow.String())
 	if !m.sourceControl.Focused() {
 		previewWithPadding = m.renderGridCached()
