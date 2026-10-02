@@ -114,6 +114,50 @@ func claudeAgents() []agentInfo {
 	return agents
 }
 
+// Background sessions the user closed (⌃Space W, or /exit inside the tile).
+// `claude attach` resumes a stopped session, and cs attaches every background
+// session it lists to show it live, so without this a closed session came back
+// within seconds (the agents list is cached for 10s). A closed session stays
+// hidden until Claude reports it busy again, i.e. the user resumed it.
+var (
+	closedMu sync.Mutex
+	closedBG = map[string]bool{}
+	attached = map[string]bool{} // background ids cs opened a wrapper for
+)
+
+// MarkClosed hides a background session and forgets it from the cached
+// agents list.
+func MarkClosed(id string) {
+	closedMu.Lock()
+	closedBG[id] = true
+	delete(attached, id)
+	closedMu.Unlock()
+	agentsMu.Lock()
+	kept := agentsCache[:0:0]
+	for _, a := range agentsCache {
+		if a.ID != id {
+			kept = append(kept, a)
+		}
+	}
+	agentsCache = kept
+	agentsMu.Unlock()
+}
+
+// isClosed reports whether a listed background session was closed by the
+// user; a busy one was resumed since, so it is shown again.
+func isClosed(a agentInfo) bool {
+	closedMu.Lock()
+	defer closedMu.Unlock()
+	if !closedBG[a.ID] {
+		return false
+	}
+	if a.Status == "busy" {
+		delete(closedBG, a.ID)
+		return false
+	}
+	return true
+}
+
 // ListExternalSessions returns every Claude session claude-squad did not start
 // as an agent: cc_ tmux sessions plus whatever Claude Code itself reports. It
 // also returns Claude's status ("busy", "idle", "waiting"…) for cs's own
@@ -160,6 +204,9 @@ func ListExternalSessions() ([]*ExternalSession, map[string]string, error) {
 
 	parents := &parentTable{}
 	for _, a := range claudeAgents() {
+		if a.Kind == "background" && isClosed(a) {
+			continue
+		}
 		if name, ok := agentPanes[a.Pid]; ok {
 			agentStatus[name] = a.Status
 			continue
@@ -359,6 +406,19 @@ func (e *ExternalSession) EnsureLive(width, height int) (string, error) {
 	}
 	name := AttachPrefix + e.Name
 	if exec.Command("tmux", "has-session", "-t", "="+name).Run() != nil {
+		closedMu.Lock()
+		gone, closed := attached[e.Name], closedBG[e.Name]
+		closedMu.Unlock()
+		if closed {
+			return "", fmt.Errorf("this session was closed")
+		}
+		if gone {
+			// cs's own `claude attach` ended: the user typed /exit in the tile.
+			// Re-attaching would resume it, so close it instead.
+			MarkClosed(e.Name)
+			go exec.Command(RealClaude(), "stop", e.Name).Run()
+			return "", fmt.Errorf("this session was closed")
+		}
 		args := []string{"new-session", "-d", "-s", name, "-c", e.Path,
 			"-x", strconv.Itoa(width), "-y", strconv.Itoa(height),
 			"-e", "CLAUDE_NO_TMUX=1", RealClaude(), "attach", e.Name}
@@ -366,6 +426,9 @@ func (e *ExternalSession) EnsureLive(width, height int) (string, error) {
 			return "", fmt.Errorf("could not open session: %s", strings.TrimSpace(string(out)))
 		}
 	}
+	closedMu.Lock()
+	attached[e.Name] = true
+	closedMu.Unlock()
 	e.Live = name
 	return name, nil
 }
@@ -383,6 +446,10 @@ func (e *ExternalSession) FitTo(width, height int) {
 // CloseAttachWrappers ends every hidden attach wrapper. The background
 // sessions themselves keep running in Claude Code's service.
 func CloseAttachWrappers() {
+	// Forget them first: a wrapper cs ends itself is not the user's /exit.
+	closedMu.Lock()
+	attached = map[string]bool{}
+	closedMu.Unlock()
 	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
 	if err != nil {
 		return
