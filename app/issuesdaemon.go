@@ -41,6 +41,13 @@ type daemonJob struct {
 
 // RunIssuesDaemon runs the background loop until killed.
 func RunIssuesDaemon() error {
+	// launchd starts us with no locale, and tmux then prints the tab in
+	// list-panes formats as "_": the session list came back empty, so the
+	// runner never saw its own tiles (Claude never "started", counts were
+	// off). Every tmux call below inherits this.
+	if os.Getenv("LANG") == "" && os.Getenv("LC_ALL") == "" {
+		_ = os.Setenv("LANG", "en_US.UTF-8")
+	}
 	release, err := config.AcquireNamedLock(config.IssuesDaemonLock, "the background issue runner is already running (process %d)")
 	if err != nil {
 		return err
