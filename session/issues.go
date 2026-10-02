@@ -22,13 +22,16 @@ type Issue struct {
 	// PR is the open pull request that closes this issue (gai issue links
 	// each issue it attaches), or 0.
 	PR int `json:"-"`
+	// PRBot: that PR was opened by a bot (the GitHub Claude app). Its issue
+	// is taken, but it is never the PR this project's issues are gathered on.
+	PRBot bool `json:"-"`
 }
 
 // ListOpenIssues returns the open issues of the GitHub repo in dir, oldest
 // first (the order they should be worked on), each with the open PR that
 // already closes it, if any.
 func ListOpenIssues(dir string) ([]Issue, error) {
-	prs := make(chan map[int]int, 1)
+	prs := make(chan map[int]prRef, 1)
 	go func() { prs <- openPRIssues(dir) }()
 	cmd := exec.Command("gh", "issue", "list", "--state", "open", "--limit", "100",
 		"--json", "number,title,url,body,createdAt")
@@ -48,20 +51,28 @@ func ListOpenIssues(dir string) ([]Issue, error) {
 	for i := range issues {
 		// Some titles are pasted with line breaks; one line keeps the list readable.
 		issues[i].Title = strings.Join(strings.Fields(issues[i].Title), " ")
-		issues[i].PR = inPR[issues[i].Number]
+		issues[i].PR, issues[i].PRBot = inPR[issues[i].Number].number, inPR[issues[i].Number].bot
 	}
 	sort.Slice(issues, func(i, j int) bool { return issues[i].CreatedAt.Before(issues[j].CreatedAt) })
 	return issues, nil
 }
 
+// prRef is the open PR closing an issue and whether a bot opened it.
+type prRef struct {
+	number int
+	bot    bool
+}
+
 // openPRIssues maps each issue an open PR closes to that PR. On error it is
-// empty: then no issue is treated as taken.
-func openPRIssues(dir string) map[int]int {
+// empty: then no issue is treated as taken. PRs opened by bots (the GitHub
+// Claude app's own fix PRs) are marked: their issues are taken, but cs must
+// never gather issues on them (it once attached 14 to one).
+func openPRIssues(dir string) map[int]prRef {
 	cmd := exec.Command("gh", "pr", "list", "--state", "open", "--limit", "100",
-		"--json", "number,closingIssuesReferences")
+		"--json", "number,closingIssuesReferences,author")
 	cmd.Dir = dir
 	out, err := cmd.Output()
-	m := map[int]int{}
+	m := map[int]prRef{}
 	if err != nil {
 		return m
 	}
@@ -70,13 +81,18 @@ func openPRIssues(dir string) map[int]int {
 		Closes []struct {
 			Number int `json:"number"`
 		} `json:"closingIssuesReferences"`
+		Author struct {
+			IsBot bool   `json:"is_bot"`
+			Login string `json:"login"`
+		} `json:"author"`
 	}
 	if json.Unmarshal(out, &prs) != nil {
 		return m
 	}
 	for _, pr := range prs {
+		bot := pr.Author.IsBot || strings.HasPrefix(pr.Author.Login, "app/") || strings.HasSuffix(pr.Author.Login, "[bot]")
 		for _, is := range pr.Closes {
-			m[is.Number] = pr.Number
+			m[is.Number] = prRef{pr.Number, bot}
 		}
 	}
 	return m
