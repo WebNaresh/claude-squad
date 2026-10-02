@@ -11,13 +11,13 @@ import (
 
 var (
 	keycapStyle = lipgloss.NewStyle().Bold(true).
-			Foreground(lipgloss.Color("#1a1a1a")).
-			Background(lipgloss.Color("#dde4f0")).
+			Foreground(lipgloss.Color("#cccccc")).
+			Background(lipgloss.Color("#313131")).
 			Padding(0, 1)
 	keyLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#333333", Dark: "#cccccc"})
 	keyDimStyle   = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#888888"})
-	keyLeadStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("230")).Background(lipgloss.Color("62")).Padding(0, 1)
-	keyStateStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("62"))
+	keyLeadStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ffffff")).Background(lipgloss.Color("#0078d4")).Padding(0, 1)
+	keyStateStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#0078d4"))
 )
 
 // Key is one shortcut: {key(s), what it does}.
