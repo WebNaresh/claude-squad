@@ -25,7 +25,7 @@ func isLeaderKey(k string) bool { return k == leaderKey || k == leaderSpace }
 
 // commandKeys are the Ctrl+] commands, in the order shown in the key bar.
 var commandKeys = []ui.Key{
-	{"T", "terminal"}, {"A", "add project"}, {"N", "issues"},
+	{"C", "new Claude"}, {"T", "terminal"}, {"A", "add project"}, {"N", "issues"},
 	{"S", "source control"}, {"Y", "copy"}, {"W", "close session"}, {"X", "close tab"},
 	{"!", "needs you"}, {"?", "help"}, {"Q", "quit"},
 }
@@ -45,6 +45,8 @@ func (m *home) handleLeader(msg tea.KeyMsg) tea.Cmd {
 	case "?", "/":
 		_, cmd := m.showHelpScreen(helpTypeGeneral{}, nil)
 		return cmd
+	case "c", "C":
+		return m.newClaudeSession()
 	case "t", "T":
 		return m.openTerminal()
 	case "w", "W":
@@ -113,7 +115,7 @@ func (m *home) copySelected() tea.Cmd {
 // everydayKeys are the Ctrl+] commands shown in the key bar; the rest are
 // in help (Ctrl+] ?) and appear in the bar once Ctrl+] is pressed.
 var everydayKeys = []ui.Key{
-	{"T", "terminal"}, {"N", "issues"}, {"S", "source control"},
+	{"C", "new Claude"}, {"T", "terminal"}, {"N", "issues"}, {"S", "source control"},
 	{"←→", "project"}, {"?", "all keys"},
 }
 
@@ -135,6 +137,10 @@ func (m *home) keyBar(width int) string {
 			name = e.Title()
 		}
 		state = "⌨ " + runewidth.Truncate(name, 40, "…")
+		if !m.appConfig.MouseOff {
+			// Terminal drag-select is off while cs has the mouse; say how.
+			now = []ui.Key{{"drag", "select + copy"}}
+		}
 		lead = "⌃Space then"
 		keys = everydayKeys
 	default:
