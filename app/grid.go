@@ -326,9 +326,12 @@ func (m *home) moveTile(dx, dy int) tea.Cmd {
 			return nil
 		}
 		cur, dx = 0, 0
-	} else if dx < 0 && cur%cols == 0 {
-		return m.focusDock() // ← from the left-most column
+	} else if dx < 0 && cur == 0 {
+		return m.focusDock() // ← from the first tile
 	}
+	// ← / → run through the tiles in reading order, wrapping between rows:
+	// Terminal.app sends Shift+↑/↓ as plain ↑/↓ (they reach Claude), so
+	// sideways is the reliable way to every tile.
 	i := cur + dx + dy*cols
 	if dy > 0 && i >= n && cur/cols < (n-1)/cols {
 		i = n - 1 // nothing directly below: go to the last tile on the next row
