@@ -2,39 +2,16 @@ package app
 
 import (
 	"claude-squad/session"
-	"claude-squad/ui"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Each project can have a terminal (a shell in its folder, tmux
-// csterm_<folder>, kept between runs). It is a tile in the grid like any
-// session: Ctrl+] t adds it (or jumps to it), `exit` closes it, and a project
-// with no sessions gets one automatically. Running `claude` in it keeps the
-// same tile, which then shows Claude's status; Ctrl+] t then opens another
-// terminal (csterm_<folder>-2).
-
-// ensureTerminal starts the project's terminal if needed, lists it and
-// selects it. It returns the tmux session name.
-func (m *home) ensureTerminal() (string, error) {
-	rows := len(m.gridRows())
-	w, h := ui.GridTileSize(rows+1, m.paneWidth, m.contentHeight)
-	name, err := session.EnsureProjectShell(m.projectTabs.Active(), w, h, m.claudeRunningIn)
-	if err != nil {
-		return "", err
-	}
-	if !m.listHas(name) {
-		if list, _, err := session.ListExternalSessions(); err == nil {
-			m.setExternalSessions(list)
-		}
-		logEvent("terminal tile opened: %s", name)
-	}
-	m.list.SelectExternal(name)
-	return name, nil
-}
+// Project terminals are csterm_<folder> tmux shells. One is docked under
+// Source Control (dock.go); one running Claude shows in the grid as a tile.
 
 func (m *home) listHas(name string) bool {
 	for _, e := range m.list.ExternalSessions() {
@@ -43,17 +20,6 @@ func (m *home) listHas(name string) bool {
 		}
 	}
 	return false
-}
-
-// openTerminal adds the project terminal tile (or goes to it) and types into it.
-func (m *home) openTerminal() tea.Cmd {
-	if m.projectTabs.Active() == "" {
-		return nil
-	}
-	if _, err := m.ensureTerminal(); err != nil {
-		return m.handleError(err)
-	}
-	return m.autoFocus()
 }
 
 // closeSession closes the selected tile after asking: a terminal's shell
@@ -90,18 +56,41 @@ func (m *home) closeSession() tea.Cmd {
 		question = fmt.Sprintf("Close %s? Claude stops; the conversation can be resumed later.", name)
 		stop = func() error { return exec.Command("tmux", "kill-session", "-t", "="+e.Name).Run() }
 	}
-	return m.confirmAction(question, func() tea.Msg {
+	cmd := m.confirmAction(question, func() tea.Msg {
 		if err := stop(); err != nil {
 			return fmt.Errorf("could not close %s: %w", name, err)
 		}
 		logEvent("session closed: %s", e.Name)
-		list, _, err := session.ListExternalSessions()
+		// Drop the tile now; reloading the session list first (claude agents)
+		// kept the dead tile on screen for a second or more.
+		return externalClosedMsg{name: e.Name}
+	})
+	m.confirmationOverlay.ConfirmLabel = "Close"
+	return cmd
+}
+
+// externalClosedMsg names a tile that was just closed.
+type externalClosedMsg struct{ name string }
+
+// justClosedFor is how long a closed session is kept out of the list, so a
+// status refresh that started before the close can't bring its tile back.
+const justClosedFor = 5 * time.Second
+
+// newClaudeSession starts a new Claude session in the active project's
+// folder (no worktree, no branch); it shows up as a tile and gets focus.
+func (m *home) newClaudeSession() tea.Cmd {
+	if !m.activeProjectExists() {
+		return m.handleError(fmt.Errorf("this project's folder no longer exists; close the tab with ⌃Space X"))
+	}
+	project := m.projectTabs.Active()
+	program := m.program
+	logEvent("new Claude session in %s", project)
+	return func() tea.Msg {
+		name, err := session.StartSession(project, program)
 		if err != nil {
 			return err
 		}
-		return externalClosedMsg{list: list}
-	})
+		list, _, _ := session.ListExternalSessions()
+		return sessionStartedMsg{name: name, sessions: list}
+	}
 }
-
-// externalClosedMsg carries the session list after a tile was closed.
-type externalClosedMsg struct{ list []*session.ExternalSession }
