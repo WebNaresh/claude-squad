@@ -15,11 +15,14 @@ import (
 )
 
 // ⌥N: pick a project and some of its open GitHub issues (oldest first) and
-// start one Claude session per issue with `gai issue <url>`. They start one
-// after another: each gai attaches its issue to the project's single open PR
-// (rewriting the PR text with the local AI), so running them together would
-// race on that PR. cs answers gai's [Y/n] questions with the default (Enter)
-// and skips its optional "Extra instructions for Claude" prompt the same way.
+// start one Claude session per issue with `gai issue <url>`. Every picked
+// issue gets its session (tile) at once, showing "queued"; the gai runs go
+// one after another in them: each gai attaches its issue to the project's
+// single open PR, so running them together would race on that PR. cs answers
+// gai's [Y/n] questions with the default (Enter) and skips its optional
+// "Extra instructions for Claude" prompt the same way, except the PR rewrite:
+// each rewrite (~40s with the local AI) replaces the previous one, so only
+// the batch's last issue in a project rewrites it; the others answer n.
 
 const issueJobTimeout = 5 * time.Minute
 
@@ -252,9 +255,17 @@ func (m *home) handleIssuePickerKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	for _, is := range p.Selected() {
+		if _, err := session.QueueIssueSession(p.Project, is); err != nil {
+			logEvent("issue queue: could not open #%d's tile: %v", is.Number, err)
+		}
 		m.issueQueue = append(m.issueQueue, queuedIssue{project: p.Project, issue: is})
 	}
-	return tea.Batch(m.handleError(fmt.Errorf("starting %d issue session(s), one after another", len(p.Selected()))), m.issueTick(0))
+	// Show every new tile now, not on the next session refresh.
+	if list, _, err := session.ListExternalSessions(); err == nil {
+		m.setExternalSessions(list)
+	}
+	return tea.Batch(m.handleError(fmt.Errorf("opened %d issue session(s); gai attaches them to the PR one at a time", len(p.Selected()))),
+		m.issueTick(0), m.refreshGrid())
 }
 
 func (m *home) issueTick(d time.Duration) tea.Cmd {
@@ -295,9 +306,14 @@ func (m *home) stepIssues() tea.Cmd {
 		m.issueJob = nil
 		return tea.Batch(m.handleError(fmt.Errorf("issue #%d is taking long; it stays in its session, moving on", j.issue.Number)), m.issueTick(0))
 	case isGaiPrompt(line) && line != j.answered:
-		logEvent("issue queue: #%d answered Enter to %q", j.issue.Number, line)
 		j.answered = line
-		_ = session.PressEnter(j.name)
+		if strings.Contains(line, "Rewrite the PR title and body") && m.moreQueuedIn(j.project) {
+			logEvent("issue queue: #%d answered n to %q (a later issue rewrites the PR)", j.issue.Number, line)
+			_ = session.PressKeys(j.name, "n")
+		} else {
+			logEvent("issue queue: #%d answered Enter to %q", j.issue.Number, line)
+			_ = session.PressEnter(j.name)
+		}
 	}
 	return m.issueTick(time.Second)
 }
@@ -317,4 +333,14 @@ func (m *home) claudeRunningIn(name string) bool {
 // whose default (Enter) is right for an unattended run.
 func isGaiPrompt(line string) bool {
 	return strings.Contains(line, "[Y/n]") || strings.HasPrefix(line, "Extra instructions for Claude")
+}
+
+// moreQueuedIn reports whether another picked issue of project waits its turn.
+func (m *home) moreQueuedIn(project string) bool {
+	for _, q := range m.issueQueue {
+		if q.project == project {
+			return true
+		}
+	}
+	return false
 }
