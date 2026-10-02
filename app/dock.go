@@ -114,7 +114,7 @@ func (m *home) setDockHidden(hidden bool) {
 	}
 	m.dockHidden = hidden
 	logEvent("dock terminal hidden=%v", hidden)
-	m.sourceControl.SetSize(m.leftWidth, m.contentHeight-dockBoxHeight(m.contentHeight, hidden))
+	m.layoutLeft()
 }
 
 // selectRow selects a grid row's session.
@@ -222,7 +222,21 @@ func (m *home) handleDockMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
 	}
 	switch msg.Button {
 	case tea.MouseButtonLeft:
-		return m.focusDock(), true
+		// Focus it, and start a drag-select like in the tiles (selection.go):
+		// letting go after a drag copies the dock's text.
+		cmd := m.focusDock()
+		if m.dockHidden {
+			return cmd, true
+		}
+		_, h := m.dockSize()
+		top := m.dockTop() + 1 // below the box's top border
+		hit := gridHit{idx: -1, x0: 0, w0: m.leftWidth, textTop: top, row: msg.Y - top}
+		hit.lines = make([]string, h)
+		m.sel = tileSelection{}
+		if hit.row >= 0 && hit.row < h {
+			m.startSelection(msg.X, msg.Y, hit)
+		}
+		return cmd, true
 	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
 		name := m.dockName()
 		if name == "" || m.dockHidden {
@@ -237,6 +251,7 @@ func (m *home) handleDockMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
 		default:
 		}
 		m.lastKey = timeNow()
+		m.skipRender = true // the next preview tick shows it (see handleGridMouse)
 		return nil, true
 	}
 	return nil, false
