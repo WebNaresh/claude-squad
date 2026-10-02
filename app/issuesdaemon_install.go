@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // The LaunchAgent that keeps `cs --issues-daemon` running while the user is
@@ -38,7 +39,7 @@ func InstallIssuesDaemon() error {
 	<key>ProgramArguments</key>
 	<array><string>%s</string><string>--issues-daemon</string></array>
 	<key>EnvironmentVariables</key>
-	<dict><key>PATH</key><string>%s</string><key>HOME</key><string>%s</string></dict>
+	<dict><key>PATH</key><string>%s</string><key>HOME</key><string>%s</string><key>LANG</key><string>en_US.UTF-8</string></dict>
 	<key>WorkingDirectory</key><string>%s</string>
 	<key>RunAtLoad</key><true/>
 	<key>KeepAlive</key><true/>
@@ -57,6 +58,11 @@ func InstallIssuesDaemon() error {
 	}
 	domain := "gui/" + strconv.Itoa(os.Getuid())
 	_ = exec.Command("launchctl", "bootout", domain+"/"+issuesAgentLabel).Run() // reload if present
+	// bootout returns before launchd has removed the job; a bootstrap then
+	// hangs or fails. Wait (up to 15s) until it is gone.
+	for i := 0; i < 30 && exec.Command("launchctl", "print", domain+"/"+issuesAgentLabel).Run() == nil; i++ {
+		time.Sleep(500 * time.Millisecond)
+	}
 	if out, err := exec.Command("launchctl", "bootstrap", domain, plist).CombinedOutput(); err != nil {
 		return fmt.Errorf("launchctl bootstrap: %s", strings.TrimSpace(string(out)))
 	}
