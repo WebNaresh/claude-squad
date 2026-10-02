@@ -233,13 +233,13 @@ func (w *TabbedWindow) String() string {
 		content = w.terminal.String()
 	}
 	b := lipgloss.RoundedBorder()
-	edge := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	edge := lipgloss.NewStyle().Foreground(lipgloss.Color("#3c3c3c"))
 	title := ""
 	if w.fileTitle != "" {
 		title = " " + lipgloss.NewStyle().Bold(true).Render(ansi.Truncate(w.fileTitle, max(0, w.width-6), "…")) + " "
 	}
 	top := edge.Render(b.TopLeft+b.Top) + title + edge.Render(strings.Repeat(b.Top, max(0, w.width-3-lipgloss.Width(title)))+b.TopRight)
-	box := lipgloss.NewStyle().Border(b, false, true, true, true).BorderForeground(lipgloss.Color("240")).
+	box := lipgloss.NewStyle().Border(b, false, true, true, true).BorderForeground(lipgloss.Color("#3c3c3c")).
 		Render(lipgloss.Place(w.width-2, w.height-2, lipgloss.Left, lipgloss.Top, content))
 	return top + "\n" + box
 }
