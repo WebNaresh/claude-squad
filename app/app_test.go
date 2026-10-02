@@ -457,9 +457,15 @@ func TestConfirmationModalVisualAppearance(t *testing.T) {
 
 	// Test that it includes the message content and instructions
 	assert.Contains(t, rendered, "Delete everything?")
-	assert.Contains(t, rendered, "Press")
-	assert.Contains(t, rendered, "to confirm")
-	assert.Contains(t, rendered, "to cancel")
+	assert.Contains(t, rendered, "Yes ⏎")
+	assert.Contains(t, rendered, "Cancel esc")
+	assert.Contains(t, rendered, "Enter confirms")
+
+	// Enter confirms, like the highlighted button says.
+	confirmed := false
+	h.confirmationOverlay.OnConfirm = func() { confirmed = true }
+	assert.True(t, h.confirmationOverlay.HandleKeyPress(tea.KeyMsg{Type: tea.KeyEnter}))
+	assert.True(t, confirmed)
 
 	// Test that the danger indicator is preserved
 	assert.Contains(t, rendered, "[!")
