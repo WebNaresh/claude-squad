@@ -38,12 +38,12 @@ var listDescStyle = lipgloss.NewStyle().
 
 var selectedTitleStyle = lipgloss.NewStyle().
 	Padding(1, 1, 0, 1).
-	Background(lipgloss.Color("#dde4f0")).
+	Background(lipgloss.Color("#313131")).
 	Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#1a1a1a"})
 
 var selectedDescStyle = lipgloss.NewStyle().
 	Padding(0, 1, 1, 1).
-	Background(lipgloss.Color("#dde4f0")).
+	Background(lipgloss.Color("#313131")).
 	Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#1a1a1a"})
 
 var externalHeaderStyle = lipgloss.NewStyle().
@@ -51,12 +51,12 @@ var externalHeaderStyle = lipgloss.NewStyle().
 	Underline(true)
 
 var mainTitle = lipgloss.NewStyle().
-	Background(lipgloss.Color("62")).
-	Foreground(lipgloss.Color("230"))
+	Background(lipgloss.Color("#0078d4")).
+	Foreground(lipgloss.Color("#ffffff"))
 
 var autoYesStyle = lipgloss.NewStyle().
-	Background(lipgloss.Color("#dde4f0")).
-	Foreground(lipgloss.Color("#1a1a1a"))
+	Background(lipgloss.Color("#313131")).
+	Foreground(lipgloss.Color("#cccccc"))
 
 type List struct {
 	// all holds every instance across projects; items is the subset shown for
