@@ -12,11 +12,11 @@ import (
 var (
 	tiStyle = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("62")).
+		BorderForeground(lipgloss.Color("#0078d4")).
 		Padding(1, 2)
 
 	tiTitleStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("62")).
+			Foreground(lipgloss.Color("#0078d4")).
 			Bold(true).
 			MarginBottom(1)
 
@@ -24,11 +24,11 @@ var (
 			Foreground(lipgloss.Color("7"))
 
 	tiFocusedButtonStyle = lipgloss.NewStyle().
-				Background(lipgloss.Color("62")).
+				Background(lipgloss.Color("#0078d4")).
 				Foreground(lipgloss.Color("0"))
 
 	tiDividerStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240"))
+			Foreground(lipgloss.Color("#3c3c3c"))
 )
 
 // TextInputOverlay represents a text input overlay with state management.
