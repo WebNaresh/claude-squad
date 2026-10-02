@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"math"
 	"strconv"
 	"strings"
 
@@ -9,12 +10,13 @@ import (
 )
 
 var (
-	gridTileStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240"))
-	gridFocusStyle   = lipgloss.NewStyle().Border(lipgloss.ThickBorder()).BorderForeground(lipgloss.Color("62"))
+	gridTileStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#3c3c3c"))
+	gridFocusStyle   = lipgloss.NewStyle().Border(lipgloss.ThickBorder()).BorderForeground(lipgloss.Color("#0078d4"))
 	gridTitleStyle   = lipgloss.NewStyle().Bold(true)
 	gridStatusStyle  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#888888"})
 	gridNeedsStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#e5a50a")).Bold(true)
-	gridEmptyMessage = "No sessions in this project yet. ⌃Space T opens a terminal here; run claude in it."
+	gridStageStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#73c991")).Bold(true)
+	gridEmptyMessage = "No Claude sessions in this project yet. ⌃Space C starts one."
 )
 
 // GridTile is one session shown in the grid.
@@ -22,7 +24,10 @@ type GridTile struct {
 	Title    string
 	Status   string
 	NeedsYou bool
-	Content  string
+	// Stage is the /stage progress ("✓ staged", "✓ done · close session"),
+	// shown in place of the status while set.
+	Stage   string
+	Content string
 }
 
 // Smallest useful tile (columns × rows, border included); the grid fits as
@@ -36,6 +41,9 @@ const (
 // showing n tiles in a width×height area (one line is kept for the page
 // indicator when they don't all fit).
 func GridLayout(n, width, height int) (cols, rows, bodyH int) {
+	if c, r, ok := balancedLayout(n, width, height); ok {
+		return c, r, height
+	}
 	fit := func(h int) (int, int) {
 		c := max(1, min(n, width/gridMinTileW))
 		r := max(1, min((n+c-1)/c, h/gridMinTileH))
@@ -48,6 +56,31 @@ func GridLayout(n, width, height int) (cols, rows, bodyH int) {
 		cols, rows = fit(bodyH)
 	}
 	return cols, rows, bodyH
+}
+
+// tileAspect is the tile shape aimed for, in columns per row. Terminal cells
+// are about twice as tall as wide, so 2.0 looks about square; a wide screen
+// used to put every session in one row of tall narrow strips.
+const tileAspect = 2.0
+
+// balancedLayout picks the columns × rows that show all n tiles with each
+// tile closest to tileAspect (ties: fewer empty slots). ok is false when no
+// layout fits them all at the minimum tile size; then the grid pages.
+func balancedLayout(n, width, height int) (cols, rows int, ok bool) {
+	best := math.Inf(1)
+	for c := 1; c <= n; c++ {
+		r := (n + c - 1) / c
+		w, h := width/c, height/r
+		if w < gridMinTileW || h < gridMinTileH {
+			continue
+		}
+		score := math.Abs(math.Log(float64(w) / float64(h) / tileAspect))
+		score += float64(c*r-n) * 0.2 // empty slots look like a gap
+		if score < best {
+			best, cols, rows, ok = score, c, r, true
+		}
+	}
+	return cols, rows, ok
 }
 
 // GridTileSize returns the content size (inside the border and its one
@@ -82,7 +115,7 @@ func RenderGrid(tiles []GridTile, focused, width, height int) string {
 				cells = append(cells, lipgloss.NewStyle().Width(tileW).Height(tileH).Render(""))
 				continue
 			}
-			cells = append(cells, renderTile(shown[i], start+i == focused, innerW, innerH))
+			cells = append(cells, RenderTile(shown[i], start+i == focused, innerW, innerH))
 		}
 		rowStrs = append(rowStrs, lipgloss.JoinHorizontal(lipgloss.Top, cells...))
 	}
@@ -95,15 +128,24 @@ func RenderGrid(tiles []GridTile, focused, width, height int) string {
 	return out
 }
 
-func renderTile(t GridTile, focused bool, w, h int) string {
-	style, border, color := gridTileStyle, lipgloss.RoundedBorder(), lipgloss.Color("240")
+// RenderTile draws one tile: title and status in the top border, the
+// bottom of the content inside, w×h inside the border and padding.
+func RenderTile(t GridTile, focused bool, w, h int) string {
+	style, border, color := gridTileStyle, lipgloss.RoundedBorder(), lipgloss.Color("#3c3c3c")
 	if focused {
-		style, border, color = gridFocusStyle, lipgloss.ThickBorder(), lipgloss.Color("62")
+		style, border, color = gridFocusStyle, lipgloss.ThickBorder(), lipgloss.Color("#0078d4")
 	}
 	edge := lipgloss.NewStyle().Foreground(color)
 
 	// Title on the left of the top border, status on the right.
 	status := gridStatusStyle.Render(" " + t.Status + " ")
+	if t.Stage != "" {
+		style := gridStageStyle
+		if strings.HasPrefix(t.Stage, "?") {
+			style = gridNeedsStyle // the guide question waits on the user
+		}
+		status = style.Render(" " + t.Stage + " ")
+	}
 	titleText := t.Title
 	if t.NeedsYou {
 		status = gridNeedsStyle.Render(" needs you ")
