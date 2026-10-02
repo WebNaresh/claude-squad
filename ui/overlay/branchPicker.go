@@ -149,18 +149,18 @@ func (bp *BranchPicker) GetSelectedBranch() string {
 
 var (
 	bpLabelStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("62")).
+			Foreground(lipgloss.Color("#0078d4")).
 			Bold(true)
 
 	bpFilterStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("7"))
 
 	bpSelectedStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("62")).
+			Background(lipgloss.Color("#0078d4")).
 			Foreground(lipgloss.Color("0"))
 
 	bpDimStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240"))
+			Foreground(lipgloss.Color("#3c3c3c"))
 )
 
 // Render renders the branch picker.
