@@ -1,14 +1,12 @@
 package overlay
 
 import (
-	"bytes"
 	"regexp"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/mattn/go-runewidth"
+	xansi "github.com/charmbracelet/x/ansi"
 	"github.com/muesli/ansi"
-	"github.com/muesli/reflow/truncate"
 	"github.com/muesli/termenv"
 )
 
@@ -23,7 +21,7 @@ func getLines(s string) (lines []string, widest int) {
 	lines = strings.Split(s, "\n")
 
 	for _, l := range lines {
-		w := ansi.PrintableRuneWidth(l)
+		w := xansi.StringWidth(l)
 		if widest < w {
 			widest = w
 		}
@@ -132,7 +130,11 @@ func PlaceOverlay(
 		opt(ws)
 	}
 
-	// Build the output string
+	// Build the output string. Rows are cut with charmbracelet/x/ansi, the
+	// same width rules the renderer and app/background.go use; mixing in
+	// other width tables (muesli, go-runewidth) cut escape codes in half and
+	// left rows wider than the screen around emoji, so the dialog's rows
+	// shifted and "48;2;31;31;31m" showed as text.
 	var b strings.Builder
 	for i, bgLine := range bgLines {
 		if i > 0 {
@@ -142,70 +144,34 @@ func PlaceOverlay(
 			b.WriteString(bgLine)
 			continue
 		}
+		bgLineWidth := xansi.StringWidth(bgLine)
 
-		pos := 0
-		if placeX > 0 {
-			left := truncate.String(bgLine, uint(placeX))
-			pos = ansi.PrintableRuneWidth(left)
-			b.WriteString(left)
-			if pos < placeX {
-				b.WriteString(ws.render(placeX - pos))
-				pos = placeX
-			}
+		left := xansi.Truncate(bgLine, placeX, "")
+		b.WriteString(left)
+		if w := xansi.StringWidth(left); w < placeX {
+			b.WriteString(ws.render(placeX - w))
 		}
 
 		fgLine := fgLines[i-placeY]
+		b.WriteString("\x1b[0m")
 		b.WriteString(fgLine)
-		pos += ansi.PrintableRuneWidth(fgLine)
+		if w := xansi.StringWidth(fgLine); w < fgWidth {
+			b.WriteString(strings.Repeat(" ", fgWidth-w))
+		}
+		b.WriteString("\x1b[0m")
 
-		right := cutLeft(bgLine, pos)
-		bgLineWidth := ansi.PrintableRuneWidth(bgLine)
-		rightWidth := ansi.PrintableRuneWidth(right)
-		if rightWidth <= bgLineWidth-pos {
-			b.WriteString(ws.render(bgLineWidth - rightWidth - pos))
+		end := placeX + fgWidth
+		if end >= bgLineWidth {
+			continue
+		}
+		right := xansi.TruncateLeft(bgLine, end, "")
+		// A wide character cut in half leaves the row a column short.
+		if w := xansi.StringWidth(right); end+w < bgLineWidth {
+			b.WriteString(strings.Repeat(" ", bgLineWidth-end-w))
 		}
 		b.WriteString(right)
 	}
 
-	return b.String()
-}
-
-func cutLeft(s string, cutWidth int) string {
-	var (
-		pos    int
-		isAnsi bool
-		ab     bytes.Buffer
-		b      bytes.Buffer
-	)
-	for _, c := range s {
-		var w int
-		if c == ansi.Marker || isAnsi {
-			isAnsi = true
-			ab.WriteRune(c)
-			if ansi.IsTerminator(c) {
-				isAnsi = false
-				if bytes.HasSuffix(ab.Bytes(), []byte("[0m")) {
-					ab.Reset()
-				}
-			}
-		} else {
-			w = runewidth.RuneWidth(c)
-		}
-
-		if pos >= cutWidth {
-			if b.Len() == 0 {
-				if ab.Len() > 0 {
-					b.Write(ab.Bytes())
-				}
-				if pos-cutWidth > 1 {
-					b.WriteByte(' ')
-					continue
-				}
-			}
-			b.WriteRune(c)
-		}
-		pos += w
-	}
 	return b.String()
 }
 
