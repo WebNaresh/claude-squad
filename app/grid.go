@@ -313,6 +313,9 @@ func projectNames(projects []string) map[string]string {
 // switching project tab when the tile belongs to another project.
 func (m *home) moveTile(dx, dy int) tea.Cmd {
 	logEvent("move tile dx=%d dy=%d", dx, dy)
+	if dy < 0 && dx == 0 && m.isDock(m.list.GetSelectedExternal()) {
+		return m.focusServers() // ↑ from the terminal: the Servers list above it
+	}
 	rows := m.gridRows()
 	n := len(rows)
 	if n == 0 {
