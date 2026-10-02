@@ -25,9 +25,9 @@ import (
 // Option keys need Terminal's "Use Option as Meta key"; Option+←/→ also
 // arrive as alt+b/alt+f, Terminal.app's default word-jump codes.
 
-var viewOnlyHintStyle = lipgloss.NewStyle().Background(lipgloss.Color("240")).Foreground(lipgloss.Color("230"))
+var viewOnlyHintStyle = lipgloss.NewStyle().Background(lipgloss.Color("#3c3c3c")).Foreground(lipgloss.Color("#ffffff"))
 
-var focusHintStyle = lipgloss.NewStyle().Background(lipgloss.Color("62")).Foreground(lipgloss.Color("230"))
+var focusHintStyle = lipgloss.NewStyle().Background(lipgloss.Color("#0078d4")).Foreground(lipgloss.Color("#ffffff"))
 
 // tmuxKeyNames maps bubbletea key names to tmux send-keys names.
 var tmuxKeyNames = map[string]string{
@@ -63,7 +63,12 @@ const wheelGap = 10 * time.Millisecond
 func init() {
 	go func() {
 		scrolled := map[string]bool{} // targets currently scrolled back
-		var lastWheel time.Time       // when the last wheel burst was seen
+		// modeChecked is when each target was last asked whether it sits in
+		// tmux copy mode. scrolled lives only in memory, so after cs restarts
+		// (every build) a pane can still be scrolled back with nobody knowing;
+		// keys then went to copy mode, not Claude ("t"/"g" even failed).
+		modeChecked := map[string]time.Time{}
+		var lastWheel time.Time // when the last wheel burst was seen
 		var pending *queuedKey
 		next := func() (queuedKey, bool) {
 			if pending != nil {
@@ -151,6 +156,13 @@ func init() {
 					default:
 						break batch
 					}
+				}
+			}
+			if !scrolled[k.target] && time.Since(modeChecked[k.target]) > 2*time.Second {
+				modeChecked[k.target] = time.Now()
+				if out, err := exec.Command("tmux", "display-message", "-p", "-t", k.target, "#{pane_in_mode}").Output(); err == nil && strings.TrimSpace(string(out)) == "1" {
+					logEvent("typing into %s: it was still scrolled back, returning it to live", k.target)
+					scrolled[k.target] = true
 				}
 			}
 			if scrolled[k.target] {
@@ -262,8 +274,11 @@ func tmuxKey(name string) (string, bool) {
 // starting a background session's attach wrapper if needed.
 func (m *home) liveTarget() (string, error) {
 	if len(m.gridRows()) == 0 && m.projectTabs.Active() != "" {
-		// Nothing running in this project: give it a terminal tile.
-		return m.ensureTerminal()
+		// Nothing running in this project: type into its terminal.
+		if m.dockHidden {
+			return "", fmt.Errorf("no sessions here; ⌃Space T opens the terminal")
+		}
+		return m.ensureDock()
 	}
 	if e := m.list.GetSelectedExternal(); e != nil {
 		w, h := m.tabbedWindow.GetPreviewSize()
@@ -307,6 +322,15 @@ func (m *home) autoFocus() tea.Cmd {
 	}
 	if e := m.list.GetSelectedExternal(); e != nil && e.Kind == session.KindTerminal {
 		return m.instanceChanged()
+	}
+	if m.dockHidden && m.isDock(m.list.GetSelectedExternal()) {
+		// Never type into a terminal that isn't on screen: go to the first
+		// tile, or show the terminal when there is none.
+		if rows := m.gridRows(); len(rows) > 0 {
+			m.selectRow(rows[0].row)
+		} else {
+			m.setDockHidden(false)
+		}
 	}
 	if target, err := m.liveTarget(); err == nil {
 		m.sessionFocus = target
