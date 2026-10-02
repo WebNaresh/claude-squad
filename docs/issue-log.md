@@ -67,7 +67,8 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 ### File paths in tiles can't be opened
 - **Saw:** a scratchpad path wrapped over 3 lines; no way to open or copy it.
 - **Fix:** clicking a path opens it (VS Code, else the default editor; folders in Finder). Wrapped rows are joined (`app/openpath.go`).
-- **Guard:** `TestPathAtWrapped`, `TestPathAtRelative`.
+- **Guard:** `TestPathAtWrapped`, `TestPathAtRelative`, `TestPathAtSentImages`.
+- **Came back (2026-10-02):** clicking a sent image (`[image] …/before-booking-details.png`) opened its parent folder. Claude prints the file size at the right edge of the wrapped path ("(283.9K" … "B)") and labels it `[image]`; joining the rows glued those into the path, and two files listed back to back joined into one. The guard only tested a plain wrapped path. Fix: `wrapRow` cuts the size and label before joining; the path finder moves past a path that ends above the click; the path under the click is checked before the image-name match; images open in Preview (or the image page if Claude sent them).
 
 ### Wheel scrolling recalled Claude's prompt history / didn't scroll
 - **Saw:** the wheel typed old prompts; `claude attach` tiles didn't scroll; slow wheel notches leaked as arrow keys.
@@ -77,12 +78,20 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 ### Closing a session took /exit then exit
 - **Fix:** ⌃Space W closes the selected session or terminal after a y/n question; background sessions via `claude stop` (`app/terminal.go`).
 - **Guard:** live test on a throwaway terminal tile.
+- **Came back (2026-10-02): closed session opens again.** ⌃Space W on a background session (whatsapp-callback-setup, d0d20006) logged "session closed" and it reappeared 20s later, twice; e1a61cd2 "closed" 4 times. `/exit` inside such a tile needed a second `exit`. Cause: cs shows background sessions through its own `claude attach` wrapper, and `claude attach` resumes a stopped session; the 10s-cached `claude agents` list still had it, so cs attached again. The guard only tested a terminal tile. Fix: `session.MarkClosed` hides the session and drops it from the cache before `claude stop`; `EnsureLive` never re-attaches a closed one; when cs's own wrapper ends (the user's `/exit`), the session is closed and stopped instead of re-attached. It shows again only when Claude reports it busy (resumed elsewhere). `CloseAttachWrappers` forgets wrappers first, so quitting cs never counts as `/exit`.
+- **Guard:** `TestMarkClosedHidesUntilBusy`, `TestCloseAttachWrappersIsNotExit` (`session/closed_test.go`).
 
 ### No way to start a Claude session from cs
 - **Saw:** an empty project said "run claude in the terminal"; the terminal is for dev servers.
 - **Cause:** the new-session key was a plain letter, which goes to the session being typed into, so it was unreachable.
 - **Fix:** ⌃Space C starts Claude in the project folder; the new tile gets focus (`newClaudeSession`, `app/terminal.go`). Shown first on the key bar and in the empty-project message.
 - **Guard:** live test with `cs -p 'bash --norc'` (no real Claude started): ⌃Space C adds a focused `cc_<project>` tile.
+
+### Ctrl+Space gives no sign of command mode (and sometimes doesn't enter it)
+- **Saw:** pressing Ctrl+Space showed nothing that said "now press a command key".
+- **Cause:** the only sign was the small key bar. Also, one press can arrive as two key events (keys.log 09:26:42: two `ctrl+@` 164ms apart, both "sent" to the session): the second counted as "pressed twice → send a real Ctrl+Space", which left command mode at once.
+- **Fix:** a repeated ⌃Space while in command mode is ignored (only Ctrl+] twice sends itself on); a blue "⌃Space · command mode" box with every command key shows in the middle of the screen until a key or esc (`leaderMenu`, `app/leader.go`).
+- **Guard:** live test: two quick ⌃Space presses keep the box up; activity.log "command key: repeated ⌃Space ignored".
 
 ### Can't select text (mouse capture on)
 - **Saw:** drag did nothing after cs turned mouse capture on for image clicks; no hint how to select.
@@ -105,6 +114,14 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 ### Session "frozen": typing, clicks, wheel do nothing
 - **Cause:** Ctrl+G in Claude opened the prompt in VS Code (`code -w`); Claude waits for the tab to close. Leftover lines stay until Claude redraws (Ctrl+L).
 - **Fix:** the tile title says "? waiting for your editor · close its tab" (`app/grid.go`).
+
+### Enter does nothing; typed text and `^[` appear under Claude's box
+- **Saw (2026-10-02):** in a terminal tile running Claude by hand (`csterm_claude-squad-2`, image1-check-terminal-viewer), `/stage` + Enter did nothing; `/stage` and `^[` were printed below the prompt box.
+- **Cause:** the pane's terminal was back in line mode (`stty`: `icanon echo`) while Claude (idle, 0% CPU, no editor child) still ran: something in that session reset the terminal and Claude didn't restore raw mode. Not a cs bug; what reset it is unknown.
+- **Way out:** `stty -f <pane tty> raw -echo` gives Claude its keys back (tty from `tmux display -p -t <session> '#{pane_tty}'`), or close the tile (⌃Space W) and `claude --resume`.
+- **Done for this case:** `stty -f /dev/ttys012 raw -echo` then Ctrl+L: Claude redrew its screen (the `^[` lines went), so it reads keys again.
+- **Auto-fix:** every 5s cs checks each tmux pane whose foreground program is Claude; one still in line mode 4s later gets Node's raw-mode settings back plus Ctrl+L, logs "keyboard restored: …" and shows "fixed the keyboard of …" (`session/keyboard.go`, `keyboardCheck` in `app/terminal.go`).
+- **Guard:** `TestRepairClaudeKeyboards` (private tmux server, stand-in `claude`). If it keeps happening, find what runs `stty`/`reset` in that session.
 
 ### Shift+↑/↓ don't move between tile rows
 - **Saw:** with tiles in two rows, Shift+↑/↓ did nothing in cs (and went to Claude as plain arrows).
