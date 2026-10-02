@@ -21,6 +21,8 @@ type ConfirmationOverlay struct {
 	ConfirmKey string
 	// Custom cancel key (defaults to 'n')
 	CancelKey string
+	// ConfirmLabel names the confirm button (defaults to "Yes")
+	ConfirmLabel string
 	// Custom styling options
 	borderColor lipgloss.Color
 }
@@ -28,12 +30,13 @@ type ConfirmationOverlay struct {
 // NewConfirmationOverlay creates a new confirmation dialog overlay with the given message
 func NewConfirmationOverlay(message string) *ConfirmationOverlay {
 	return &ConfirmationOverlay{
-		Dismissed:   false,
-		message:     message,
-		width:       50, // Default width
-		ConfirmKey:  "y",
-		CancelKey:   "n",
-		borderColor: lipgloss.Color("#de613e"), // Red color for confirmations
+		Dismissed:    false,
+		message:      message,
+		width:        50, // Default width
+		ConfirmKey:   "y",
+		ConfirmLabel: "Yes",
+		CancelKey:    "n",
+		borderColor:  lipgloss.Color("#de613e"), // Red color for confirmations
 	}
 }
 
@@ -41,7 +44,7 @@ func NewConfirmationOverlay(message string) *ConfirmationOverlay {
 // Returns true if the overlay should be closed
 func (c *ConfirmationOverlay) HandleKeyPress(msg tea.KeyMsg) bool {
 	switch msg.String() {
-	case c.ConfirmKey:
+	case c.ConfirmKey, "enter": // Enter presses the focused (confirm) button
 		c.Dismissed = true
 		if c.OnConfirm != nil {
 			c.OnConfirm()
@@ -59,22 +62,32 @@ func (c *ConfirmationOverlay) HandleKeyPress(msg tea.KeyMsg) bool {
 	}
 }
 
-// Render renders the confirmation overlay
+// Render draws the dialog: a filled box with the question and two buttons,
+// the confirm one highlighted as the default for Enter.
 func (c *ConfirmationOverlay) Render(opts ...WhitespaceOption) string {
-	style := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+	bg := lipgloss.Color("#2a2a3c")
+	inner := max(c.width-6, 10) // border and two columns of padding each side
+	base := lipgloss.NewStyle().Background(bg).Foreground(lipgloss.Color("#e6e6e6"))
+	key := base.Foreground(lipgloss.Color("#888888"))
+
+	message := base.Width(inner).Render(c.message)
+	confirm := lipgloss.NewStyle().Background(c.borderColor).Foreground(lipgloss.Color("#ffffff")).Bold(true).
+		Render(" " + c.ConfirmLabel + " ⏎ ")
+	cancel := lipgloss.NewStyle().Background(lipgloss.Color("#44445a")).Foreground(lipgloss.Color("#e6e6e6")).
+		Render(" Cancel esc ")
+	buttons := cancel + base.Render("  ") + confirm
+	buttons = base.Width(inner).Align(lipgloss.Right).Render(buttons)
+	hint := key.Width(inner).Render(c.ConfirmKey + " / Enter confirms · " + c.CancelKey + " / esc cancels")
+	gap := base.Width(inner).Render("")
+
+	content := lipgloss.JoinVertical(lipgloss.Left, message, gap, buttons, gap, hint)
+	return lipgloss.NewStyle().
+		Border(lipgloss.ThickBorder()).
 		BorderForeground(c.borderColor).
+		BorderBackground(bg).
+		Background(bg).
 		Padding(1, 2).
-		Width(c.width)
-
-	// Add the confirmation instructions
-	content := c.message + "\n\n" +
-		"Press " + lipgloss.NewStyle().Bold(true).Render(c.ConfirmKey) + " to confirm, " +
-		lipgloss.NewStyle().Bold(true).Render(c.CancelKey) + " or " +
-		lipgloss.NewStyle().Bold(true).Render("esc") + " to cancel"
-
-	// Apply the border style and return
-	return style.Render(content)
+		Render(content)
 }
 
 // SetWidth sets the width of the confirmation overlay
