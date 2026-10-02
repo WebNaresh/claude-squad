@@ -11,8 +11,8 @@ import (
 
 var (
 	projectTabActiveStyle = lipgloss.NewStyle().
-				Background(lipgloss.Color("62")).
-				Foreground(lipgloss.Color("230")).
+				Background(lipgloss.Color("#0078d4")).
+				Foreground(lipgloss.Color("#ffffff")).
 				Bold(true).
 				Padding(0, 1)
 	projectTabStyle = lipgloss.NewStyle().
