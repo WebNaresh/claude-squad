@@ -201,3 +201,15 @@ func PaneLastLine(name string) (string, bool) {
 func PressEnter(name string) error {
 	return exec.Command("tmux", "send-keys", "-t", name, "Enter").Run()
 }
+
+// PaneScreen returns a tmux session's visible screen as plain text, with
+// wrapped lines joined.
+func PaneScreen(name string) string {
+	out, _ := exec.Command("tmux", "capture-pane", "-p", "-J", "-t", name).Output()
+	return string(out)
+}
+
+// SendKeys sends tmux key names (Down, Enter…) to a session.
+func SendKeys(name string, keys ...string) error {
+	return exec.Command("tmux", append([]string{"send-keys", "-t", name}, keys...)...).Run()
+}
