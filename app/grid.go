@@ -260,7 +260,7 @@ func captureTile(j gridJob, w, h int) ui.GridTile {
 	if strings.Contains(ansi.Strip(t.Content), "Save and close editor to continue") {
 		// Claude opened the prompt in an editor (Ctrl+G) and reads nothing
 		// until it closes; looked like a frozen session.
-		t.Stage, t.NeedsYou = "? waiting for your editor · close its tab", false
+		t.Stage, t.NeedsYou = editorWaitTag, false
 	}
 	if r := contentRows(t.Content); r > 0 && r < h/2 {
 		// Evidence for half-empty tiles: what was captured, and why.
@@ -483,6 +483,10 @@ func (m *home) needsFit(name string, w, h int) bool {
 	m.fitted[name] = size
 	return true
 }
+
+// editorWaitTag marks a tile whose Claude waits for its prompt to come back
+// from an editor (Ctrl+G); typing into the tile ends the wait (livepane.go).
+const editorWaitTag = "? editing in VS Code (Ctrl+G) · type here to return"
 
 // cachedTile is a tile's last capture, reused for tiles not being typed into.
 type cachedTile struct {
