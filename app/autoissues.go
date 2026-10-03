@@ -98,7 +98,7 @@ func (m *home) autoRunning(project string) int {
 func prRoom(issues []session.Issue) (room, pr int) {
 	count := map[int]int{}
 	for _, is := range issues {
-		if is.PR > 0 && !is.PRBot { // a bot's PR is never ours
+		if is.PR > 0 && !is.PRBot && !is.PRMerged { // a bot's or a merged PR is never where new issues go
 			count[is.PR]++
 			if count[is.PR] > count[pr] || pr == 0 {
 				pr = is.PR
