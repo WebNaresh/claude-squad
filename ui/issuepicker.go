@@ -248,7 +248,7 @@ func (p *IssuePicker) Render() string {
 	}
 	if len(p.issues) == 0 {
 		if p.inPR > 0 {
-			b.WriteString(fmt.Sprintf("No open issues left: the other %d are already in an open PR.", p.inPR))
+			b.WriteString(fmt.Sprintf("No open issues left: the other %d are already in a PR (open or merged).", p.inPR))
 		} else {
 			b.WriteString("No open issues.")
 		}
@@ -298,7 +298,7 @@ func (p *IssuePicker) Render() string {
 	b.WriteString(p.renderPreview(w-4, avail-room-1))
 	foot := fmt.Sprintf("%d ticked · each gets its own session running gai issue, one after another", len(p.Selected()))
 	if p.inPR > 0 {
-		foot += fmt.Sprintf(" · %d hidden: already in an open PR", p.inPR)
+		foot += fmt.Sprintf(" · %d hidden: already in a PR (open or merged)", p.inPR)
 	}
 	if p.stale {
 		foot += " · refreshing…"
