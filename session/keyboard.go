@@ -67,7 +67,7 @@ func RepairClaudeKeyboards() []string {
 			delete(cookedSince, tty)
 			cookedMu.Unlock()
 			// Ctrl+L makes Claude redraw over the lines echoed meanwhile.
-			_ = exec.Command("tmux", "send-keys", "-t", "="+name, "C-l").Run()
+			_ = exec.Command("tmux", "send-keys", "-t", "="+name+":", "C-l").Run()
 			repaired = append(repaired, name)
 		}
 	}
