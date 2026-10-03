@@ -227,6 +227,9 @@ func (m *home) handleRecentMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
 	if row < 0 || row >= len(list) {
 		return nil, false
 	}
+	if msg.X < m.leftWidth-recentOpenW {
+		return nil, true // only "↺ reopen" reopens; a stray click on the row doesn't
+	}
 	return m.reopenClosed(list[row]), true
 }
 
