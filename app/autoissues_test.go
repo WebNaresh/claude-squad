@@ -105,3 +105,20 @@ func TestPRRoomIgnoresBotPRs(t *testing.T) {
 		t.Errorf("prRoom = room %d, PR #%d; want PR #2306 with room %d", room, pr, autoMaxPerPR-1)
 	}
 }
+
+// An issue a merged PR lists is taken (never started again), and a merged
+// PR never counts as the project's PR with room.
+func TestMergedPRIssuesAreTaken(t *testing.T) {
+	m, project := autoHome(t, 0, 0, 0)
+	m.issueCache[project] = []session.Issue{
+		{Number: 944, PR: 951, PRMerged: true},
+		{Number: 960},
+	}
+	if room, pr := prRoom(m.issueCache[project]); pr != 0 || room != autoMaxPerPR {
+		t.Errorf("merged PR counted: room %d PR #%d", room, pr)
+	}
+	m.stepAuto()
+	if m.issuePicker == nil || m.issuePicker.TickLimit != 1 {
+		t.Fatalf("want an offer of just #960, got picker=%v", m.issuePicker != nil)
+	}
+}
