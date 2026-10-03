@@ -848,3 +848,65 @@ func ResumeSession(dir, program, sessionID string, issue int) (string, error) {
 	_ = exec.Command("tmux", "set-option", "-t", name, "window-size", "latest").Run()
 	return name, nil
 }
+
+// KillSession ends a tmux session and makes sure the program in it stops
+// too. Claude ignores the hangup tmux sends when its session is killed and
+// kept running on its own, so a closed tile came back as a "view only" one
+// (#2239). Its pane's process gets SIGTERM after a second, then SIGKILL; in
+// the background, so closing never waits.
+func KillSession(name string) error {
+	pid := 0
+	if out, err := exec.Command("tmux", "display-message", "-p", "-t", "="+name+":", "#{pane_pid}").Output(); err == nil {
+		pid, _ = strconv.Atoi(strings.TrimSpace(string(out)))
+	}
+	err := exec.Command("tmux", "kill-session", "-t", "="+name).Run()
+	if pid > 1 {
+		go func() {
+			alive := func() bool { return syscall.Kill(pid, 0) == nil }
+			time.Sleep(time.Second)
+			if alive() {
+				_ = syscall.Kill(pid, syscall.SIGTERM)
+				time.Sleep(3 * time.Second)
+				if alive() {
+					_ = syscall.Kill(pid, syscall.SIGKILL)
+				}
+			}
+		}()
+	}
+	return err
+}
+
+// EndEditorWait ends Claude's wait for an external editor in a tmux session:
+// Ctrl+G opens the prompt in $EDITOR (VS Code: `code -w`) and Claude reads
+// nothing until that editor closes. It stops the waiting editor command
+// under the session's pane; Claude then takes back the text as saved. It
+// returns whether one was waiting.
+func EndEditorWait(name string) bool {
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", "="+name+":", "#{pane_pid}").Output()
+	if err != nil {
+		return false
+	}
+	pane, _ := strconv.Atoi(strings.TrimSpace(string(out)))
+	if pane <= 1 {
+		return false
+	}
+	ps, err := exec.Command("ps", "-axo", "pid=,ppid=,args=").Output()
+	if err != nil {
+		return false
+	}
+	ended := false
+	for _, l := range strings.Split(string(ps), "\n") {
+		f := strings.Fields(l)
+		if len(f) < 3 {
+			continue
+		}
+		pid, _ := strconv.Atoi(f[0])
+		ppid, _ := strconv.Atoi(f[1])
+		args := strings.Join(f[2:], " ")
+		if ppid == pane && strings.Contains(args, "claude-prompt-") {
+			_ = syscall.Kill(pid, syscall.SIGTERM)
+			ended = true
+		}
+	}
+	return ended
+}
