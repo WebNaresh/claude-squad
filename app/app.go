@@ -810,7 +810,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			entry := closedEntry{Project: msg.project, Name: msg.name, Title: msg.title,
 				SessionID: msg.sessionID, Issue: session.IssueNumberOf(msg.name), At: time.Now()}
 			m.noteClosed(entry)
-			m.noteGhost(msg.name, msg.title, entry) // before the grid drops it
+			m.noteGhost(msg.name, msg.title) // before the grid drops it
 		}
 		for _, k := range closedKeys(msg.name, msg.sessionID, msg.pid) {
 			m.justClosed[k] = time.Now()
