@@ -234,7 +234,13 @@ type home struct {
 	autoSaid     map[string]string
 	autoPrompt   string
 	// progress counts finished sessions per day for the strip above the tiles
-	progress      *progressData
+	progress *progressData
+	// recent is the last closed Claude sessions, newest first (recentclosed.go)
+	recent []closedEntry
+	// ghost is a just-closed tile's place, shown a few seconds (closeghost.go)
+	ghost *closeGhost
+	// accentOf is each session's colour index (closeghost.go)
+	accentOf      map[string]int
 	serverCursor  int
 	dockCapturing bool
 	// lastSessions/lastAgents are what the last refresh saw (for the activity log)
@@ -293,6 +299,7 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 	h.dockNames = map[string]string{}
 	h.dockShots = map[string]dockCapturedMsg{}
 	h.progress = loadProgress()
+	h.recent = loadRecent()
 	h.sourceControl = ui.NewSourceControl()
 	h.scLoading = map[string]bool{}
 	h.scCache = map[string]scStatusMsg{}
@@ -740,6 +747,9 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if cmd, ok := m.handleRecentMouse(msg); ok {
+			return m, cmd
+		}
 		if cmd, ok := m.handleServersMouse(msg); ok {
 			return m, cmd
 		}
@@ -795,6 +805,12 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.finished && msg.project != "" && m.progress != nil {
 			m.progress.addDone(msg.project)
+		}
+		if msg.project != "" {
+			entry := closedEntry{Project: msg.project, Name: msg.name, Title: msg.title,
+				SessionID: msg.sessionID, Issue: session.IssueNumberOf(msg.name), At: time.Now()}
+			m.noteClosed(entry)
+			m.noteGhost(msg.name, msg.title, entry) // before the grid drops it
 		}
 		for _, k := range closedKeys(msg.name, msg.sessionID, msg.pid) {
 			m.justClosed[k] = time.Now()
@@ -2010,7 +2026,7 @@ func (m *home) view() string {
 	}
 
 	scWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(
-		lipgloss.JoinVertical(lipgloss.Left, nonEmpty(m.sourceControl.String(), m.renderServers(), m.renderDock())...))
+		lipgloss.JoinVertical(lipgloss.Left, nonEmpty(m.sourceControl.String(), m.renderServers(), m.renderRecent(), m.renderDock())...))
 	previewWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.tabbedWindow.String())
 	if !m.sourceControl.Focused() {
 		previewWithPadding = m.renderGridCached()
