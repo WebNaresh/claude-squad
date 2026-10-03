@@ -138,7 +138,7 @@ func (m *home) serversHeight() int {
 
 // layoutLeft sizes Source Control to what the servers and the dock leave.
 func (m *home) layoutLeft() {
-	m.sourceControl.SetSize(m.leftWidth, m.contentHeight-dockBoxHeight(m.contentHeight, m.dockHidden)-m.serversHeight())
+	m.sourceControl.SetSize(m.leftWidth, m.contentHeight-dockBoxHeight(m.contentHeight, m.dockHidden)-m.serversHeight()-m.recentHeight())
 }
 
 // renderServers draws the list, or "" when the project runs none.
@@ -163,7 +163,7 @@ func (m *home) renderServers() string {
 }
 
 // serversTop is the screen row of the "Servers" heading.
-func (m *home) serversTop() int { return m.dockTop() - m.serversHeight() }
+func (m *home) serversTop() int { return m.recentTop() - m.serversHeight() }
 
 // handleServersMouse stops the server whose "✕ stop" was clicked.
 func (m *home) handleServersMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
