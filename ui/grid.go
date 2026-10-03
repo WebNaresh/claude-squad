@@ -28,6 +28,13 @@ type GridTile struct {
 	// shown in place of the status while set.
 	Stage   string
 	Content string
+	// Accent is the session's own colour (title and border), the same
+	// wherever its tile moves, so after a close the tiles that shift are
+	// still told apart. Empty: the plain grey.
+	Accent lipgloss.Color
+	// Ghost: a just-closed session's place, kept a few seconds before the
+	// tiles close the gap (app/closeghost.go).
+	Ghost bool
 }
 
 // Smallest useful tile (columns × rows, border included); the grid fits as
@@ -132,8 +139,19 @@ func RenderGrid(tiles []GridTile, focused, width, height int) string {
 // bottom of the content inside, w×h inside the border and padding.
 func RenderTile(t GridTile, focused bool, w, h int) string {
 	style, border, color := gridTileStyle, lipgloss.RoundedBorder(), lipgloss.Color("#3c3c3c")
-	if focused {
-		style, border, color = gridFocusStyle, lipgloss.ThickBorder(), lipgloss.Color("#0078d4")
+	// Every session in its own colour, bold enough to tell tiles apart at a
+	// glance (a thick frame and a coloured name tag); the one being typed in
+	// gets a white double frame on top of its colour tag.
+	switch {
+	case t.Ghost:
+		border, color = lipgloss.NormalBorder(), lipgloss.Color("#e06c75")
+		style = style.Border(border).BorderForeground(color)
+	case focused:
+		style, border, color = gridFocusStyle, lipgloss.DoubleBorder(), lipgloss.Color("#ffffff")
+		style = style.Border(border).BorderForeground(color)
+	case t.Accent != "":
+		border, color = lipgloss.ThickBorder(), t.Accent
+		style = style.Border(border).BorderForeground(color)
 	}
 	edge := lipgloss.NewStyle().Foreground(color)
 
@@ -151,7 +169,14 @@ func RenderTile(t GridTile, focused bool, w, h int) string {
 		status = gridNeedsStyle.Render(" needs you ")
 		titleText = "❓ " + titleText
 	}
-	title := " " + gridTitleStyle.Render(ansi.Truncate(titleText, max(0, w-lipgloss.Width(status)-4), "…")) + " "
+	titleStyle := gridTitleStyle
+	if t.Ghost {
+		titleStyle = titleStyle.Foreground(lipgloss.Color("#ffffff")).Background(lipgloss.Color("#be5046")).Padding(0, 1)
+	} else if t.Accent != "" {
+		// The name as a solid tag in the session's colour.
+		titleStyle = titleStyle.Foreground(lipgloss.Color("#1a1a1a")).Background(t.Accent).Padding(0, 1)
+	}
+	title := " " + titleStyle.Render(ansi.Truncate(titleText, max(0, w-lipgloss.Width(status)-4), "…")) + " "
 	fill := max(0, w-lipgloss.Width(title)-lipgloss.Width(status))
 	top := edge.Render(border.TopLeft+border.Top) + title + edge.Render(strings.Repeat(border.Top, fill)) +
 		status + edge.Render(border.Top+border.TopRight)
