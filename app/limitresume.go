@@ -76,7 +76,6 @@ func limitIsLast(screen string) bool {
 	return false
 }
 
-
 // resumeAfterLimit types "continue" into idle tiles whose usage limit has
 // reset. done remembers what was already resumed (session + limit line).
 func resumeAfterLimit(sessions []*session.ExternalSession, done map[string]bool, now time.Time) {
