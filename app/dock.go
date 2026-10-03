@@ -6,6 +6,7 @@ import (
 	"claude-squad/ui"
 	"fmt"
 	"os/exec"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -260,13 +261,19 @@ func (m *home) handleDockMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
 // externalCount is how many external sessions run in a project, not
 // counting its docked terminal.
 func (m *home) externalCount(project string) int {
-	n := m.list.CountExternalInProject(project)
-	if name := m.dockNames[project]; name != "" {
-		for _, e := range m.list.ExternalSessions() {
-			if e.Name == name && !m.claudeRunningIn(name) {
-				n--
-			}
+	// Plain terminals (the dock and any other csterm_ shell) aren't sessions;
+	// one counts only once Claude runs in it. The dock's name is known only
+	// after its tab was opened, so the count used to include it until then
+	// ("practice-stack (7)" with 6 Claude tiles).
+	n := 0
+	for _, e := range m.list.ExternalSessions() {
+		if m.projectOf(e.Path) != project {
+			continue
 		}
+		if strings.HasPrefix(e.Name, session.TermPrefix) && e.Status == "" {
+			continue
+		}
+		n++
 	}
 	return n
 }
