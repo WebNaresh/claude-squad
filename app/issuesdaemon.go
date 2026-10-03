@@ -67,6 +67,8 @@ func RunIssuesDaemon() error {
 	issuesAt := map[string]time.Time{}
 	issues := map[string][]session.Issue{}
 	said := map[string]string{}
+	limitDone := map[string]bool{} // sessions already resumed after a usage limit
+	nextLimitCheck := time.Time{}
 	nextScan := time.Time{}
 
 	for {
@@ -75,6 +77,16 @@ func RunIssuesDaemon() error {
 			logEvent("daemon: stopped")
 			return nil
 		case <-time.After(time.Second):
+		}
+
+		// Usage-limit resumes on their own clock: the issue scan below waits
+		// while a gai job runs (up to 5 min), which left tiles stopped long
+		// after the reset.
+		if time.Now().After(nextLimitCheck) {
+			nextLimitCheck = time.Now().Add(15 * time.Second)
+			if list, _, err := session.ListExternalSessions(); err == nil {
+				resumeAfterLimit(list, limitDone, time.Now())
+			}
 		}
 
 		// The current gai job: answer its questions, finish when Claude runs.
