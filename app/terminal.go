@@ -56,7 +56,7 @@ func (m *home) closeSession() tea.Cmd {
 		}
 	default:
 		question = fmt.Sprintf("Close %s? Claude stops; the conversation can be resumed later.", name)
-		stop = func() error { return exec.Command("tmux", "kill-session", "-t", "="+e.Name).Run() }
+		stop = func() error { return session.KillSession(e.Name) }
 	}
 	project := m.projectOf(e.Path)
 	finished := e.Status != "" || session.IssueNumberOf(e.Name) > 0
