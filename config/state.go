@@ -103,7 +103,7 @@ func SaveState(state *State) error {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
-	return os.WriteFile(statePath, data, 0644)
+	return writeFileAtomic(statePath, data, 0644)
 }
 
 // InstanceStorage interface implementation
