@@ -67,7 +67,9 @@ func RunIssuesDaemon() error {
 	issuesAt := map[string]time.Time{}
 	issues := map[string][]session.Issue{}
 	said := map[string]string{}
-	limitDone := map[string]bool{} // sessions already resumed after a usage limit
+	ready := map[string]bool{}      // projects already on a fresh base for their new batch
+	saidBase := map[string]string{} // last "not starting a new batch yet" reason logged
+	limitDone := map[string]bool{}  // sessions already resumed after a usage limit
 	nextLimitCheck := time.Time{}
 	nextScan := time.Time{}
 
@@ -184,6 +186,27 @@ func RunIssuesDaemon() error {
 			if key := fmt.Sprint(running, room, offer); said[p] != key {
 				said[p] = key
 				logEvent("daemon: %s: %d running, %d free, PR #%d room %d, %d issue(s) to start", filepath.Base(p), running, free, pr, room, offer)
+			}
+			if offer == 0 {
+				continue
+			}
+			// A new batch (no open PR of the project's own): start it from an
+			// up-to-date main, not the merged branch (batchbase.go). Only when
+			// an issue is about to start; once its PR exists, the batch
+			// continues on that branch.
+			if pr == 0 && !ready[p] {
+				if ok, why := freshBase(p); !ok {
+					if saidBase[p] != why {
+						saidBase[p] = why
+						logEvent("daemon: %s: not starting a new batch yet: %s", filepath.Base(p), why)
+					}
+					continue
+				}
+				ready[p] = true
+				delete(saidBase, p)
+			}
+			if pr > 0 {
+				delete(ready, p) // the next time no PR is open, clean up again
 			}
 			n := min(free, room)
 			for _, is := range issues[p] {
