@@ -67,7 +67,7 @@ func (m *home) closeSession() tea.Cmd {
 		logEvent("session closed: %s", e.Name)
 		// Drop the tile now; reloading the session list first (claude agents)
 		// kept the dead tile on screen for a second or more.
-		return externalClosedMsg{name: e.Name, sessionID: e.SessionID, pid: e.Pid, project: project, finished: finished}
+		return externalClosedMsg{name: e.Name, sessionID: e.SessionID, pid: e.Pid, project: project, finished: finished, title: name}
 	})
 	m.confirmationOverlay.ConfirmLabel = "Close"
 	return cmd
@@ -85,6 +85,7 @@ type externalClosedMsg struct {
 	// counted as done today in the progress strip (progress.go).
 	project  string
 	finished bool
+	title    string // shown in "Recently closed" (recentclosed.go)
 }
 
 // justClosedFor is how long a closed session is kept out of the list, so a
