@@ -86,3 +86,30 @@ func TestPathAtSentImages(t *testing.T) {
 		}
 	}
 }
+
+// A path that starts on its own row after a sentence ("Steps are in" then
+// "/private/…" wrapped mid-word): joining the rows glues "in" onto it, which
+// once made the click open nothing.
+func TestPathAtAfterSentence(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "0a44ad1c-cf08-4e9c", "scratchpad", "2236-migration.md")
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("steps"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cut := len(file) - len("tchpad/2236-migration.md")
+	lines := []string{
+		"  ⚠ Your action:",
+		"  1. Production: the deploy stops at this migration until it's applied by hand. Steps are in",
+		"     " + file[:cut],
+		"     " + file[cut:],
+		"  2. Decide on the capture-route data leak: fix it here, or hand it to the #2239 session.",
+	}
+	for row := 2; row <= 3; row++ {
+		if got := pathAt(lines, row, ""); got != file {
+			t.Errorf("row %d: got %q, want %q", row, got, file)
+		}
+	}
+}
