@@ -25,6 +25,8 @@ type Issue struct {
 	// PRBot: that PR was opened by a bot (the GitHub Claude app). Its issue
 	// is taken, but it is never the PR this project's issues are gathered on.
 	PRBot bool `json:"-"`
+	// PRMerged: that PR is already merged; the issue still counts as taken.
+	PRMerged bool `json:"-"`
 }
 
 // ListOpenIssues returns the open issues of the GitHub repo in dir, oldest
@@ -51,7 +53,8 @@ func ListOpenIssues(dir string) ([]Issue, error) {
 	for i := range issues {
 		// Some titles are pasted with line breaks; one line keeps the list readable.
 		issues[i].Title = strings.Join(strings.Fields(issues[i].Title), " ")
-		issues[i].PR, issues[i].PRBot = inPR[issues[i].Number].number, inPR[issues[i].Number].bot
+		ref := inPR[issues[i].Number]
+		issues[i].PR, issues[i].PRBot, issues[i].PRMerged = ref.number, ref.bot, ref.merged
 	}
 	sort.Slice(issues, func(i, j int) bool { return issues[i].CreatedAt.Before(issues[j].CreatedAt) })
 	return issues, nil
@@ -61,6 +64,7 @@ func ListOpenIssues(dir string) ([]Issue, error) {
 type prRef struct {
 	number int
 	bot    bool
+	merged bool // the PR is merged: the issue is taken, the PR has no room
 }
 
 // openPRIssues maps each issue an open PR closes to that PR. On error it is
@@ -68,31 +72,36 @@ type prRef struct {
 // Claude app's own fix PRs) are marked: their issues are taken, but cs must
 // never gather issues on them (it once attached 14 to one).
 func openPRIssues(dir string) map[int]prRef {
-	cmd := exec.Command("gh", "pr", "list", "--state", "open", "--limit", "100",
-		"--json", "number,closingIssuesReferences,author")
-	cmd.Dir = dir
-	out, err := cmd.Output()
 	m := map[int]prRef{}
-	if err != nil {
-		return m
-	}
-	var prs []struct {
-		Number int `json:"number"`
-		Closes []struct {
+	// Merged PRs first, so an open PR closing the same issue wins below. An
+	// issue a merged PR lists but that is still open (reopened, or GitHub
+	// didn't close it) was worked on already: it is taken too (#944).
+	for _, state := range []string{"merged", "open"} {
+		cmd := exec.Command("gh", "pr", "list", "--state", state, "--limit", "100",
+			"--json", "number,closingIssuesReferences,author")
+		cmd.Dir = dir
+		out, err := cmd.Output()
+		if err != nil {
+			continue
+		}
+		var prs []struct {
 			Number int `json:"number"`
-		} `json:"closingIssuesReferences"`
-		Author struct {
-			IsBot bool   `json:"is_bot"`
-			Login string `json:"login"`
-		} `json:"author"`
-	}
-	if json.Unmarshal(out, &prs) != nil {
-		return m
-	}
-	for _, pr := range prs {
-		bot := pr.Author.IsBot || strings.HasPrefix(pr.Author.Login, "app/") || strings.HasSuffix(pr.Author.Login, "[bot]")
-		for _, is := range pr.Closes {
-			m[is.Number] = prRef{pr.Number, bot}
+			Closes []struct {
+				Number int `json:"number"`
+			} `json:"closingIssuesReferences"`
+			Author struct {
+				IsBot bool   `json:"is_bot"`
+				Login string `json:"login"`
+			} `json:"author"`
+		}
+		if json.Unmarshal(out, &prs) != nil {
+			continue
+		}
+		for _, pr := range prs {
+			bot := pr.Author.IsBot || strings.HasPrefix(pr.Author.Login, "app/") || strings.HasSuffix(pr.Author.Login, "[bot]")
+			for _, is := range pr.Closes {
+				m[is.Number] = prRef{number: pr.Number, bot: bot, merged: state == "merged"}
+			}
 		}
 	}
 	return m
