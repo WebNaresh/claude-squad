@@ -1,0 +1,41 @@
+#!/bin/zsh
+# claude launcher from claude-squad: runs interactive claude sessions inside
+# tmux (session name cc_<folder>_<n>) so `cs` can list them, show them live and
+# let you type into them, while this terminal stays attached as usual.
+# Everything else goes straight to the real claude untouched.
+# Opt out for one run: CLAUDE_NO_TMUX=1 claude
+
+REAL="${CLAUDE_REAL:-$HOME/.local/bin/claude}"
+tmuxc=(tmux)
+[[ -n "$CLAUDE_TMUX_SOCKET" ]] && tmuxc+=(-L "$CLAUDE_TMUX_SOCKET") # tests only
+
+# Pass through: already inside tmux (cs agents, tmux users), not a terminal
+# (VS Code extension, scripts, pipes), opted out, or tmux missing.
+if [[ -n "$TMUX" || -n "$CLAUDE_NO_TMUX" || ! -t 0 || ! -t 1 ]] || ! command -v tmux >/dev/null; then
+  exec "$REAL" "$@"
+fi
+# Pass through: non-interactive flags and subcommands.
+for a in "$@"; do
+  case "$a" in -p|--print|-v|--version|-h|--help) exec "$REAL" "$@" ;; esac
+done
+case "$1" in update|doctor|mcp|config|install|setup-token|migrate-installer|plugin|plugins) exec "$REAL" "$@" ;; esac
+
+base="cc_${${PWD:t}//[^A-Za-z0-9_-]/-}"
+name="$base" n=1
+while "${tmuxc[@]}" has-session -t "=$name" 2>/dev/null; do
+  n=$((n + 1)); name="${base}_$n"
+done
+
+# Carry this shell's environment into the session; a tmux server started
+# earlier would otherwise hand claude its own stale PATH and settings.
+envargs=()
+for v in ${(k)parameters[(R)*export*]}; do
+  case "$v" in TMUX|TMUX_PANE|_|SHLVL|PWD|OLDPWD) continue ;; esac
+  envargs+=(-e "$v=${(P)v}")
+done
+
+"${tmuxc[@]}" new-session -d -s "$name" -c "$PWD" -x "${COLUMNS:-120}" -y "${LINES:-40}" "${envargs[@]}" -- "$REAL" "$@" || exec "$REAL" "$@"
+"${tmuxc[@]}" set-option -t "$name" status off >/dev/null
+"${tmuxc[@]}" set-option -t "$name" mouse on >/dev/null
+"${tmuxc[@]}" set-option -t "$name" window-size latest >/dev/null
+exec "${tmuxc[@]}" attach-session -t "=$name"
