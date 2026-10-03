@@ -55,11 +55,22 @@ func pathAt(lines []string, row int, dir string) string {
 			break // starts below the click
 		}
 		// Joining rows can glue the next word, or the next listed file, onto
-		// the path's end; take the longest prefix that exists.
+		// the path's end; take the longest prefix that exists. It can also
+		// glue the word before onto its start ("Steps are in" + "/private/…"
+		// → "in/private/…"): then try again from the path's own "/".
 		found, end := "", 0
-		for e := z; e > a+1; e-- {
-			if p := resolvePath(strings.TrimRight(text[a:e], ".,:;)'\"`"), dir); p != "" {
-				found, end = p, e
+		starts := []int{a}
+		if i := strings.Index(text[a:z], "/"); i > 0 {
+			starts = append(starts, a+i)
+		}
+		for _, from := range starts {
+			for e := z; e > from+1; e-- {
+				if p := resolvePath(strings.TrimRight(text[from:e], ".,:;)'\"`"), dir); p != "" {
+					found, end = p, e
+					break
+				}
+			}
+			if found != "" {
 				break
 			}
 		}
