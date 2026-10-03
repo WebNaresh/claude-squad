@@ -112,7 +112,7 @@ func readIssueCache(project string) ([]session.Issue, bool) {
 	out := make([]session.Issue, len(c))
 	for i, ci := range c {
 		out[i] = ci.Issue
-		out[i].PR, out[i].PRBot = ci.PR, ci.PRBot
+		out[i].PR, out[i].PRBot, out[i].PRMerged = ci.PR, ci.PRBot, ci.PRMerged
 	}
 	return out, true
 }
@@ -124,7 +124,7 @@ func writeIssueCache(project string, issues []session.Issue) {
 	}
 	c := make([]cachedIssue, len(issues))
 	for i, is := range issues {
-		c[i] = cachedIssue{is, is.PR, is.PRBot}
+		c[i] = cachedIssue{is, is.PR, is.PRBot, is.PRMerged}
 	}
 	if data, err := json.Marshal(c); err == nil {
 		_ = os.WriteFile(f, data, 0o644)
@@ -198,8 +198,9 @@ func writePrefs(project string, p issuePrefs) {
 // cachedIssue stores PR too (Issue leaves it out of its JSON).
 type cachedIssue struct {
 	session.Issue
-	PR    int  `json:"pr"`
-	PRBot bool `json:"pr_bot"`
+	PR       int  `json:"pr"`
+	PRBot    bool `json:"pr_bot"`
+	PRMerged bool `json:"pr_merged"`
 }
 
 // busyIssues returns the issue numbers that already have a session in project.
