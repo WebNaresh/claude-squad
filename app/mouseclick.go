@@ -22,6 +22,7 @@ import (
 // gridHit is the tile under a screen cell.
 type gridHit struct {
 	idx        int      // index into gridRows/gridTiles
+	ghost      bool     // the placeholder of a just-closed session
 	row        int      // content row inside the tile (-1: border or title)
 	lines      []string // the tile's content rows as plain text
 	x0, y0, w0 int
@@ -31,7 +32,8 @@ type gridHit struct {
 // hitGrid finds the tile at screen cell (x, y), reading the tile layout the
 // same way RenderGrid draws it.
 func (m *home) hitGrid(x, y int) (gridHit, bool) {
-	n := len(m.gridTiles)
+	shown, focus := m.shownTiles() // as drawn: with a closed tile's placeholder
+	n := len(shown)
 	if n == 0 || m.sourceControl.Focused() || m.lastView == "" {
 		return gridHit{}, false
 	}
@@ -49,11 +51,19 @@ func (m *home) hitGrid(x, y int) (gridHit, bool) {
 		return gridHit{}, false
 	}
 	perPage := cols * rows
-	idx := max(0, m.gridFocus)/perPage*perPage + r*cols + c
+	idx := max(0, focus)/perPage*perPage + r*cols + c
 	if idx >= n {
 		return gridHit{}, false
 	}
-	h := gridHit{idx: idx, x0: gx + c*tileW, y0: top + r*tileH, w0: tileW}
+	ghost := false
+	if gi := m.ghostIdx(); gi >= 0 {
+		if idx == gi {
+			ghost = true
+		} else if idx > gi {
+			idx-- // back to the index among the grid's sessions
+		}
+	}
+	h := gridHit{idx: idx, x0: gx + c*tileW, y0: top + r*tileH, w0: tileW, ghost: ghost}
 	// Content rows sit below the top border (which holds the title), inside
 	// the side border and one column of padding.
 	first, last := h.y0+1, h.y0+tileH-2
@@ -90,7 +100,7 @@ func (m *home) handleGridMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
 			if !m.sel.wasFocused {
 				return nil, true
 			}
-			return m.clickAt(m.sel.pressHit, m.sel.ext), true
+			return m.clickAt(m.sel.pressHit, m.sel.ext, m.sel.sx), true
 		}
 	}
 	if msg.Action != tea.MouseActionPress {
@@ -99,6 +109,12 @@ func (m *home) handleGridMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
 	hit, ok := m.hitGrid(msg.X, msg.Y)
 	if !ok {
 		return nil, false
+	}
+	if hit.ghost {
+		if msg.Button == tea.MouseButtonLeft {
+			return m.clickGhost(), true
+		}
+		return nil, true
 	}
 	rows := m.gridRows()
 	if hit.idx >= len(rows) {
@@ -161,9 +177,17 @@ func (m *home) handleGridMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
 }
 
 // clickAt opens the image or file path under a click in a tile's text.
-func (m *home) clickAt(hit gridHit, e *session.ExternalSession) tea.Cmd {
+func (m *home) clickAt(hit gridHit, e *session.ExternalSession, x int) tea.Cmd {
 	if e == nil || hit.row < 0 {
 		return nil
+	}
+	// An issue number (Claude's status line shows "#2210", a link in a plain
+	// terminal; cs keeps the mouse, so it opens it itself).
+	if n := issueAt(hit.lines[hit.row], x-(hit.x0+2)); n > 0 {
+		if url := issueURL(e, n); url != "" {
+			logEvent("opened issue #%d from %s", n, e.Name)
+			return func() tea.Msg { return session.OpenInBrowser(url) }
+		}
 	}
 	// The path under the click wins: an image Claude sent opens on the
 	// session's image page, any other file on its own.
