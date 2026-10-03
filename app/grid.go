@@ -496,9 +496,10 @@ type cachedTile struct {
 // size changed; drawing many tiles costs up to ~30ms, and most frames
 // change nothing.
 func (m *home) renderGridCached() string {
+	tiles, focus := m.shownTiles()
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d|%d|%d|", m.gridFocus, m.paneWidth, m.contentHeight)
-	for _, t := range m.gridTiles {
+	fmt.Fprintf(&b, "%d|%d|%d|%d|", focus, m.paneWidth, m.contentHeight, m.ghostIdx())
+	for _, t := range tiles {
 		fmt.Fprintf(&b, "%s|%s|%v|%d|", t.Title, t.Status, t.NeedsYou, len(t.Content))
 		b.WriteString(t.Content)
 	}
@@ -511,7 +512,7 @@ func (m *home) renderGridCached() string {
 	}
 	m.gridRenderKey = key
 	m.gridRendered = lipgloss.JoinVertical(lipgloss.Left, strip,
-		ui.RenderGrid(m.gridTiles, m.gridFocus, m.paneWidth, m.contentHeight))
+		ui.RenderGrid(tiles, focus, m.paneWidth, m.contentHeight))
 	return m.gridRendered
 }
 
