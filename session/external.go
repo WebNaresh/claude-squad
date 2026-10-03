@@ -823,3 +823,28 @@ func formatTurn(role, text string) []string {
 	}
 	return out
 }
+
+// ResumeSession reopens a closed Claude conversation in a new tmux session in
+// dir: `<program> --resume <sessionID>`. An issue session gets its issue name
+// back (cc_<folder>_i<N>) when it is free, so it counts as that issue again.
+func ResumeSession(dir, program, sessionID string, issue int) (string, error) {
+	name := ""
+	if issue > 0 {
+		if n := IssueSessionName(dir, issue); exec.Command("tmux", "has-session", "-t", "="+n).Run() != nil {
+			name = n
+		}
+	}
+	if name == "" {
+		base := ExternalPrefix + sessionNameRe.ReplaceAllString(filepath.Base(dir), "-")
+		name = base
+		for n := 2; exec.Command("tmux", "has-session", "-t", "="+name).Run() == nil; n++ {
+			name = fmt.Sprintf("%s_%d", base, n)
+		}
+	}
+	if out, err := exec.Command("tmux", "new-session", "-d", "-s", name, "-c", dir, "-x", "200", "-y", "50",
+		program+" --resume "+sessionID).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("could not reopen it: %s", strings.TrimSpace(string(out)))
+	}
+	_ = exec.Command("tmux", "set-option", "-t", name, "window-size", "latest").Run()
+	return name, nil
+}
