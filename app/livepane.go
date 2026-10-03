@@ -426,6 +426,16 @@ func (m *home) handleSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// On an empty prompt Claude's ← opens its agent view; nothing to move.
 		return m, nil
 	}
+	if c, ok := m.tileCache[m.sessionFocusRow]; ok && c.tile.Stage == editorWaitTag {
+		// Claude waits for the editor Ctrl+G opened: typing here means
+		// "come back"; end that wait instead of typing into a frozen input.
+		target := m.sessionFocus
+		logEvent("ended the editor wait in %s (typed into it)", target)
+		c.tile.Stage = ""
+		m.tileCache[m.sessionFocusRow] = c
+		go session.EndEditorWait(target)
+		return m, nil
+	}
 	logKey("queue", m.sessionFocus, msg)
 	// Forwarding a key changes nothing on screen until the session echoes it
 	// (picked up by the next preview tick), so skip rebuilding the view. A
