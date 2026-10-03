@@ -13,7 +13,7 @@ func TestClosedTileKeepsItsPlace(t *testing.T) {
 	// Five tiles a..e; "b" (index 1) is closed.
 	m.gridKeys = "session:a|session:b|session:c|session:d|session:e|"
 	m.gridTiles = make([]ui.GridTile, 5)
-	m.noteGhost("b", "issue b", closedEntry{SessionID: "sid-b"})
+	m.noteGhost("b", "issue b")
 	if m.ghost == nil || m.ghost.idx != 1 {
 		t.Fatalf("ghost = %+v, want index 1", m.ghost)
 	}
