@@ -39,9 +39,12 @@ func TestRecentlyClosed(t *testing.T) {
 	if m.recentHeight() != 4 {
 		t.Errorf("height %d, want 4", m.recentHeight())
 	}
-	// A click on the first row picks "newest".
+	// Only "↺ reopen" reopens; a stray click on the row's text doesn't.
 	row := m.recentTop() + 1
-	if cmd, ok := m.handleRecentMouse(tea.MouseMsg{X: 50, Y: row, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}); !ok || cmd == nil {
-		t.Error("click on the first row did nothing")
+	if cmd, _ := m.handleRecentMouse(tea.MouseMsg{X: 10, Y: row, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}); cmd != nil {
+		t.Error("a click on the row's text reopened the session")
+	}
+	if cmd, ok := m.handleRecentMouse(tea.MouseMsg{X: m.leftWidth - 3, Y: row, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}); !ok || cmd == nil {
+		t.Error("click on ↺ reopen did nothing")
 	}
 }
