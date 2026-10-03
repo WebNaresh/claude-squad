@@ -111,9 +111,9 @@ func (m *home) handleGridMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
 		return nil, false
 	}
 	if hit.ghost {
-		if msg.Button == tea.MouseButtonLeft {
-			return m.clickGhost(), true
-		}
+		// No reopen on a click here: right after a close, the next click in
+		// that spot is usually meant for the tile moving in, and it reopened
+		// the session just closed (#2239). "↺ reopen" in Recently closed does.
 		return nil, true
 	}
 	rows := m.gridRows()
