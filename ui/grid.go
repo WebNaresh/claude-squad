@@ -15,7 +15,6 @@ var (
 	gridTitleStyle   = lipgloss.NewStyle().Bold(true)
 	gridStatusStyle  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#888888"})
 	gridNeedsStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#e5a50a")).Bold(true)
-	gridStageStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#73c991")).Bold(true)
 	gridEmptyMessage = "No Claude sessions in this project yet. ⌃Space C starts one."
 )
 
@@ -158,11 +157,7 @@ func RenderTile(t GridTile, focused bool, w, h int) string {
 	// Title on the left of the top border, status on the right.
 	status := gridStatusStyle.Render(" " + t.Status + " ")
 	if t.Stage != "" {
-		style := gridStageStyle
-		if strings.HasPrefix(t.Stage, "?") {
-			style = gridNeedsStyle // the guide question waits on the user
-		}
-		status = style.Render(" " + t.Stage + " ")
+		status = stageTag(t.Stage)
 	}
 	titleText := t.Title
 	if t.NeedsYou {
@@ -198,4 +193,18 @@ func RenderTile(t GridTile, focused bool, w, h int) string {
 	}
 	body := lipgloss.NewStyle().Width(w).Render(strings.Join(lines, "\n"))
 	return top + "\n" + style.BorderTop(false).Padding(0, 1).Width(w+2).Render(body)
+}
+
+// stageTag draws the /stage progress as a solid tag, so a finished session
+// can't be mistaken for one still working: green "✓ DONE · close it", amber
+// when a question waits on the user, blue while staging is under way.
+func stageTag(stage string) string {
+	bg, fg, text := lipgloss.Color("#1f6feb"), lipgloss.Color("#ffffff"), stage
+	switch {
+	case strings.HasPrefix(stage, "✓ done"):
+		bg, fg, text = lipgloss.Color("#2ea043"), lipgloss.Color("#0d1117"), "✓ DONE · close it"
+	case strings.HasPrefix(stage, "?"):
+		bg, fg = lipgloss.Color("#e5a50a"), lipgloss.Color("#0d1117")
+	}
+	return lipgloss.NewStyle().Bold(true).Foreground(fg).Background(bg).Padding(0, 1).Render(text)
 }
