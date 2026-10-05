@@ -75,6 +75,12 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Fix:** burst detection (10ms gap, 300ms sticky window); SGR wheel events to alternate-screen panes, tmux copy-mode otherwise (`app/livepane.go`).
 - **Guard:** `app/livepane_test.go`; keys.log shows "wheel scroll …".
 
+### Not sure which tile is selected; focus jumps away before ⌃Space W
+- **Saw (2026-10-05):** to close the tile in row 1, column 3 the user clicked it three times, because selection kept moving and the selected tile was hard to spot.
+- **Cause:** auto-jump to a new question only waited for 3s without a *key*; clicks didn't count. activity.log 08:15:52: click on #2268, auto-jump to #2270 89ms later; 08:13:42 the same with #2265 → #2264. The selected tile differed only by a white frame, and long names cut off the issue number.
+- **Fix:** a click counts as input. A tile picked by hand (click or arrow) holds focus for 30s (`pickHold`); a question meanwhile shows "❓ X needs you · press ! to jump there" instead of moving. When it does jump, it says "❓ moved to X". The selected tile has a white "▶" name tag and "◀ SELECTED" on its top border. Cut names keep their "#NNNN". The close question names the position: "Close X (row 1, column 3)?" (`app/grid.go`, `app/mouseclick.go`, `app/terminal.go`, `ui/grid.go`).
+- **Guard:** activity.log "question …: no auto-jump, tile picked Ns ago"; `TestCutKeepingIssue` (`ui/grid_test.go`).
+
 ### Closing a session took /exit then exit
 - **Fix:** ⌃Space W closes the selected session or terminal after a y/n question; background sessions via `claude stop` (`app/terminal.go`).
 - **Guard:** live test on a throwaway terminal tile.
@@ -138,6 +144,15 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 ### Closing a terminal left its tile up for a second
 - **Cause:** after the kill, the session list was reloaded (`claude agents`) before the tile went.
 - **Fix:** the tile is dropped at once and kept out for 5s; a capture started before the close is discarded (`app/terminal.go`, `app/app.go`, `app/grid.go`).
+
+## Background runner
+
+### Switching Claude subscription (/login) left every tile stopped
+- **Saw (2026-10-05):** after `/login` to another subscription, every tile showed "Remote Control disconnected — signed-in claude.ai account or organization changed" and `/rc failed`. Tiles stopped on the old account's usage limit stayed stopped until its reset time. The user had to type `/remote-control` and `continue` in each tile by hand.
+- **Cause:** the runner only resumed a limit after its reset time, and nothing turned Remote Control back on.
+- **Fix:** when that notice is the last step on a tile with an empty prompt, the runner types `/remote-control`. If the tile was stopped on a limit, it also types `continue` straight away, because the new account has its own limit. It does this once per tile per account (`accountUuid/organizationUuid` from `~/.claude.json`). It also counts "⏺" as a step, not only "●" (`app/limitresume.go`).
+- **Came back (same day): `/stage` couldn't upload screenshots.** The claude.ai connectors (Glitchgrab) stayed signed in to the old account, so #2307 asked how to attach its shots. `/reload-plugins` reconnects them; the runner now types it right after `/remote-control`.
+- **Guard:** `TestAccountSwitch`; activity.log "claude.ai account changed, typed /remote-control and /reload-plugins" and "usage limit on the old account, typed continue". First live run: 10 tiles, 3 resumed from a limit.
 
 ## Test incidents (rules for live tests)
 
