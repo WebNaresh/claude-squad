@@ -164,14 +164,23 @@ func RenderTile(t GridTile, focused bool, w, h int) string {
 		status = gridNeedsStyle.Render(" needs you ")
 		titleText = "❓ " + titleText
 	}
+	if focused && !t.Ghost {
+		// Said in words on the right too, where the name tag can't be cut.
+		status = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#ffffff")).Render(" ◀ SELECTED ") + " " + status
+	}
 	titleStyle := gridTitleStyle
 	if t.Ghost {
 		titleStyle = titleStyle.Foreground(lipgloss.Color("#ffffff")).Background(lipgloss.Color("#be5046")).Padding(0, 1)
+	} else if focused {
+		// The selected tile reads as selected from across the room: a white
+		// tag with an arrow, on top of its white double frame.
+		titleStyle = titleStyle.Bold(true).Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#ffffff")).Padding(0, 1)
+		titleText = "▶ " + titleText
 	} else if t.Accent != "" {
 		// The name as a solid tag in the session's colour.
 		titleStyle = titleStyle.Foreground(lipgloss.Color("#1a1a1a")).Background(t.Accent).Padding(0, 1)
 	}
-	title := " " + titleStyle.Render(ansi.Truncate(titleText, max(0, w-lipgloss.Width(status)-4), "…")) + " "
+	title := " " + titleStyle.Render(cutKeepingIssue(titleText, max(0, w-lipgloss.Width(status)-4))) + " "
 	fill := max(0, w-lipgloss.Width(title)-lipgloss.Width(status))
 	top := edge.Render(border.TopLeft+border.Top) + title + edge.Render(strings.Repeat(border.Top, fill)) +
 		status + edge.Render(border.Top+border.TopRight)
@@ -193,6 +202,21 @@ func RenderTile(t GridTile, focused bool, w, h int) string {
 	}
 	body := lipgloss.NewStyle().Width(w).Render(strings.Join(lines, "\n"))
 	return top + "\n" + style.BorderTop(false).Padding(0, 1).Width(w+2).Render(body)
+}
+
+// cutKeepingIssue shortens a tile name to w cells, cutting the middle so
+// the issue number at the end ("…-#2268") stays: it is what tells two tiles
+// apart, and what you check before closing one.
+func cutKeepingIssue(title string, w int) string {
+	if ansi.StringWidth(title) <= w {
+		return title
+	}
+	i := strings.LastIndex(title, "#")
+	if i < 0 || ansi.StringWidth(title[i:])+4 > w {
+		return ansi.Truncate(title, w, "…")
+	}
+	tail := title[i:]
+	return ansi.Truncate(title[:i], w-ansi.StringWidth(tail), "…") + tail
 }
 
 // stageTag draws the /stage progress as a solid tag, so a finished session
