@@ -160,6 +160,9 @@ func (m *home) handleGridMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
 	}
 
 	wasFocused := rowKey(entry.Instance, entry.External) == m.selectedRowKey()
+	// A click is input too: without this, a question auto-jumped away 89ms
+	// after a click on another tile, so ⌃Space W nearly closed the wrong one.
+	m.lastKey, m.lastPick = time.Now(), time.Now()
 	// Focus the clicked tile.
 	if entry.Instance != nil {
 		m.list.SelectInstance(entry.Instance)
