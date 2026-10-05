@@ -58,6 +58,13 @@ func (m *home) closeSession() tea.Cmd {
 		question = fmt.Sprintf("Close %s? Claude stops; the conversation can be resumed later.", name)
 		stop = func() error { return session.KillSession(e.Name) }
 	}
+	if where := m.tilePosition(); where != "" {
+		if strings.Contains(question, name+"?") {
+			question = strings.Replace(question, name+"?", name+" ("+where+")?", 1)
+		} else {
+			question = strings.Replace(question, "?", " ("+where+")?", 1)
+		}
+	}
 	project := m.projectOf(e.Path)
 	finished := e.Status != "" || session.IssueNumberOf(e.Name) > 0
 	cmd := m.confirmAction(question, func() tea.Msg {
