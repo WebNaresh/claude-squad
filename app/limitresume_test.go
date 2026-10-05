@@ -33,3 +33,26 @@ func TestLimitReset(t *testing.T) {
 		t.Error("no limit line, but a reset found")
 	}
 }
+
+func TestAccountSwitch(t *testing.T) {
+	limit := "● Bash(...)\n  ⎿  You've hit your session limit · resets 6:10pm (Asia/Calcutta)\n     /upgrade to increase your usage limit.\n\n✻ Worked for 1s · done 3:48 PM\n"
+	notice := "⏺ Remote Control disconnected — signed-in claude.ai account or organization changed on this machine — run\n  /remote-control to start a session for the current account, or /login to switch back, then\n  /remote-control\n\n❯ \n"
+	screen := limit + notice
+	if !switchedAccount(screen) {
+		t.Error("notice is the last step, but no switch seen")
+	}
+	if !limitIsLast(screen) {
+		t.Error("the switch notice counted as a new step after the limit")
+	}
+	// After /remote-control and continue: Claude works again, no switch.
+	if switchedAccount(screen + "⏺ Bash(go test)\n❯ \n") {
+		t.Error("a later step, but still seen as just switched")
+	}
+	if switchedAccount("⏺ Done.\n❯ \n") {
+		t.Error("no notice, but a switch seen")
+	}
+	// ⏺ is a step too: a resumed session isn't stopped on its limit.
+	if limitIsLast(limit + "⏺ Bash(go test)\n❯ \n") {
+		t.Error("⏺ step after the limit not seen")
+	}
+}
