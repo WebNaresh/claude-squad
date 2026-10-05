@@ -2,6 +2,9 @@ package app
 
 import (
 	"claude-squad/session"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -60,8 +63,23 @@ func isLimitNotice(lines []string, i int) bool {
 	return i+1 < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[i+1]), "/upgrade")
 }
 
+// isStep reports whether a line starts one of Claude's steps: "●", which
+// tmux shows as "⏺" in some terminals.
+func isStep(l string) bool {
+	return strings.HasPrefix(l, "●") || strings.HasPrefix(l, "⏺")
+}
+
+// isAccountSwitch reports whether a step line is Claude's notice that the
+// signed-in claude.ai account changed (the user ran /login for another
+// subscription): "Remote Control disconnected — signed-in claude.ai account
+// or organization changed on this machine …".
+func isAccountSwitch(l string) bool {
+	return isStep(l) && strings.Contains(l, "Remote Control disconnected — signed-in")
+}
+
 // limitIsLast reports whether nothing happened after the latest limit line:
-// no new step ("●") below it, so Claude is still stopped there.
+// no new step below it, so Claude is still stopped there. The account-switch
+// notice doesn't count as a step: Claude prints it on its own.
 func limitIsLast(screen string) bool {
 	lines := strings.Split(screen, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -69,16 +87,50 @@ func limitIsLast(screen string) bool {
 		if isLimitNotice(lines, i) {
 			return true
 		}
-		if strings.HasPrefix(l, "●") {
+		if isStep(l) && !isAccountSwitch(l) {
 			return false
 		}
 	}
 	return false
 }
 
+// switchedAccount reports whether the last step on the screen is the
+// account-switch notice: the user signed in to another subscription since
+// this session last did anything.
+func switchedAccount(screen string) bool {
+	lines := strings.Split(screen, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if l := strings.TrimSpace(lines[i]); isStep(l) {
+			return isAccountSwitch(l)
+		}
+	}
+	return false
+}
+
+// claudeAccount names the signed-in claude.ai account and organization
+// (from ~/.claude.json), so each switch is handled once per tile.
+func claudeAccount() string {
+	home, _ := os.UserHomeDir()
+	data, err := os.ReadFile(filepath.Join(home, ".claude.json"))
+	if err != nil {
+		return ""
+	}
+	var c struct {
+		OAuthAccount struct {
+			AccountUUID      string `json:"accountUuid"`
+			OrganizationUUID string `json:"organizationUuid"`
+		} `json:"oauthAccount"`
+	}
+	if json.Unmarshal(data, &c) != nil {
+		return ""
+	}
+	return c.OAuthAccount.AccountUUID + "/" + c.OAuthAccount.OrganizationUUID
+}
+
 // resumeAfterLimit types "continue" into idle tiles whose usage limit has
 // reset. done remembers what was already resumed (session + limit line).
 func resumeAfterLimit(sessions []*session.ExternalSession, done map[string]bool, now time.Time) {
+	account := ""
 	for _, e := range sessions {
 		// Not by status: a background shell left running ("1 shell still
 		// running") keeps Claude "busy" while it waits on the limit (#2231).
@@ -88,6 +140,33 @@ func resumeAfterLimit(sessions []*session.ExternalSession, done map[string]bool,
 		}
 		screen := session.PaneScreen(e.Live)
 		at, _, ok := limitReset(screen, now)
+		// Signed in to another subscription (/login): Remote Control and the
+		// claude.ai connectors dropped, and the old account's limit no longer
+		// applies. Turn Remote Control back on, reload the connectors and, if the tile was stopped on a limit, carry on now
+		// instead of waiting for the old account's reset time.
+		if switchedAccount(screen) && promptEmpty(e.Live) {
+			if account == "" {
+				account = claudeAccount()
+			}
+			key := e.Name + "|account|" + account
+			if done[key] {
+				continue
+			}
+			done[key] = true
+			_ = session.PressKeys(e.Live, "/remote-control")
+			// The claude.ai connectors (Glitchgrab: /stage's screenshot
+			// upload) stay signed in to the old account until reloaded.
+			time.Sleep(1500 * time.Millisecond) // let each local command finish first
+			_ = session.PressKeys(e.Live, "/reload-plugins")
+			logEvent("daemon: %s: claude.ai account changed, typed /remote-control and /reload-plugins", e.Name)
+			if ok && limitIsLast(screen) {
+				time.Sleep(1500 * time.Millisecond)
+				_ = session.PressKeys(e.Live, "continue")
+				done[e.Name+"|"+at.Format(time.RFC3339)] = true
+				logEvent("daemon: %s: usage limit on the old account, typed continue", e.Name)
+			}
+			continue
+		}
 		// promptEmpty (livepane.go) reads the colours: the greyed suggestion
 		// Claude shows in an empty prompt ("ok wait") isn't text someone typed;
 		// reading plain text skipped #2251 for it.
