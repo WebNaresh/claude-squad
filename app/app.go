@@ -205,12 +205,15 @@ type home struct {
 	issueJob    *issueJob
 	// needsSeen holds the sessions known to wait on the user (to spot new
 	// questions); questionJumped the ones focus already moved to once;
-	// lastKey is the time of the last key press
+	// lastKey is the time of the last key press or click; lastPick when a
+	// tile was last chosen by hand (click or arrow), which holds the focus
+	// there against auto-jumps for pickHold
 	sel            tileSelection        // mouse text selection in a tile (selection.go)
 	justClosed     map[string]time.Time // tiles closed a moment ago (closeSession)
 	needsSeen      map[string]bool
 	questionJumped map[string]bool
 	lastKey        time.Time
+	lastPick       time.Time
 	gridMarkdown   map[string]*ui.MarkdownCache
 	// paneWidth is the width of the session pane / grid area
 	paneWidth int
