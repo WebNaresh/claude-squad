@@ -67,6 +67,21 @@ func (m *home) gridFocused(rows []gridEntry) int {
 	return 0
 }
 
+// tilePosition names where the selected tile sits ("row 1, column 3"), so
+// the close question can be checked against the screen, or "" for the dock.
+func (m *home) tilePosition() string {
+	rows := m.gridRows()
+	i := m.gridFocused(rows)
+	if i < 0 || i >= len(rows) || rowKey(rows[i].row.Instance, rows[i].row.External) != m.selectedRowKey() {
+		return ""
+	}
+	cols, _, _ := ui.GridLayout(len(rows), m.paneWidth, m.contentHeight)
+	if cols < 1 {
+		return ""
+	}
+	return fmt.Sprintf("row %d, column %d", i/cols+1, i%cols+1)
+}
+
 // refreshGrid re-captures the tiles. It decides on the UI thread (cheap:
 // which tiles are stale, which screens need resizing) and returns a command
 // that runs the tmux captures on a background goroutine, so key presses and
@@ -356,6 +371,7 @@ func (m *home) moveTile(dx, dy int) tea.Cmd {
 		return nil
 	}
 	target := rows[i]
+	m.lastPick = time.Now()
 	var cmd tea.Cmd
 	if target.project != m.projectTabs.Active() {
 		cmd = m.switchProject(m.projectTabs.Select(indexOf(m.projectTabs.Projects(), target.project)))
@@ -374,6 +390,11 @@ func (m *home) moveTile(dx, dy int) tea.Cmd {
 // key press; otherwise it points to it in the message line.
 
 const typingPause = 3 * time.Second
+
+// pickHold keeps a tile you chose by hand selected: no auto-jump moves away
+// from it for this long, so reading it and then pressing ⌃Space W closes
+// that tile, not a question that popped up meanwhile.
+const pickHold = 30 * time.Second
 
 // rowKey identifies an agent or external session across refreshes.
 func rowKey(inst *session.Instance, e *session.ExternalSession) string {
@@ -451,13 +472,18 @@ func (m *home) focusNewQuestions() tea.Cmd {
 			continue
 		}
 		m.questionJumped[a.key] = true
+		if time.Since(m.lastPick) < pickHold {
+			// You picked the tile you're on: stay, and say where the question is.
+			logEvent("question %s: no auto-jump, tile picked %s ago", title(a), time.Since(m.lastPick).Round(time.Second))
+			return m.handleError(fmt.Errorf("❓ %s needs you · press ! to jump there", title(a)))
+		}
 		logEvent("auto-jump to question: %s (idle %s)", title(a), time.Since(m.lastKey).Round(time.Second))
 		if a.inst != nil {
 			m.list.SelectInstance(a.inst)
 		} else {
 			m.list.SelectExternal(a.ext.Name)
 		}
-		return tea.Batch(note(), m.autoFocus())
+		return tea.Batch(m.handleError(fmt.Errorf("❓ moved to %s: it needs you", title(a))), m.autoFocus())
 	}
 	return note()
 }
