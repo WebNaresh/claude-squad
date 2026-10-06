@@ -278,6 +278,8 @@ func (p *IssuePicker) Render() string {
 			title = "(has a session) " + title
 		case p.skipped[is.Number]:
 			title = "(skipped) " + title
+		case is.QAFailed:
+			title = "(failed testing, again) " + title
 		}
 		line := fmt.Sprintf("%s #%-5d %s", box, is.Number, title)
 		line = runewidth.Truncate(line, w-8, "…")
