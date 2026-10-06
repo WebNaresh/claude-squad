@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"claude-squad/session"
 	"claude-squad/ui"
 
 	"github.com/charmbracelet/lipgloss"
@@ -34,13 +35,22 @@ func (m *home) accentFor(key string, onScreen []string) lipgloss.Color {
 	if m.accentOf == nil {
 		m.accentOf = map[string]int{}
 	}
+	// The colour the session has in Claude (/color) wins.
+	if c := m.claudeColorOf(key); c != "" {
+		return c
+	}
 	if i, ok := m.accentOf[key]; ok {
 		return accents[i]
 	}
-	used := map[int]bool{}
+	used := map[lipgloss.Color]bool{}
 	for _, k := range onScreen {
-		if i, ok := m.accentOf[k]; ok && k != key {
-			used[i] = true
+		if k == key {
+			continue
+		}
+		if c := m.claudeColorOf(k); c != "" {
+			used[c] = true
+		} else if i, ok := m.accentOf[k]; ok {
+			used[accents[i]] = true
 		}
 	}
 	h := fnv.New32a()
@@ -48,13 +58,28 @@ func (m *home) accentFor(key string, onScreen []string) lipgloss.Color {
 	start := int(h.Sum32() % uint32(len(accents)))
 	pick := start
 	for n := 0; n < len(accents); n++ {
-		if c := (start + n) % len(accents); !used[c] {
+		if c := (start + n) % len(accents); !used[accents[c]] {
 			pick = c
 			break
 		}
 	}
 	m.accentOf[key] = pick
 	return accents[pick]
+}
+
+// claudeColorOf is the /color a tile's session has in Claude, as cs draws
+// it, or "".
+func (m *home) claudeColorOf(key string) lipgloss.Color {
+	name, ok := strings.CutPrefix(key, "session:")
+	if !ok {
+		return ""
+	}
+	for _, e := range m.list.ExternalSessions() {
+		if e.Name == name {
+			return claudeColorHex(session.AgentColor(e.SessionID))
+		}
+	}
+	return ""
 }
 
 // closeGhost is a just-closed tile's place in the grid.
