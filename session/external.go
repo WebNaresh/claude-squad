@@ -698,7 +698,8 @@ var (
 	transcriptPaths = map[string]string{}
 	// transcriptCache holds each transcript's markdown with the version
 	// (size+mtime) it was built from.
-	transcriptCache = map[string][2]string{}
+	transcriptMissAt = map[string]time.Time{} // when a missing transcript was last looked for
+	transcriptCache  = map[string][2]string{}
 )
 
 // transcriptPath finds ~/.claude/projects/*/<sessionID>.jsonl.
@@ -707,6 +708,9 @@ func transcriptPath(sessionID string) string {
 	defer transcriptMu.Unlock()
 	if p, ok := transcriptPaths[sessionID]; ok {
 		return p
+	}
+	if time.Since(transcriptMissAt[sessionID]) < 5*time.Second {
+		return "" // just looked: no file yet
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -717,7 +721,14 @@ func transcriptPath(sessionID string) string {
 	if len(matches) > 0 {
 		p = matches[0]
 	}
-	transcriptPaths[sessionID] = p
+	// A new session's transcript appears only after its first message:
+	// remember a miss for a few seconds, not for good (a new tile kept
+	// the wrong colour because its /color was never read).
+	if p != "" {
+		transcriptPaths[sessionID] = p
+	} else if time.Since(transcriptMissAt[sessionID]) > 5*time.Second {
+		transcriptMissAt[sessionID] = time.Now()
+	}
 	return p
 }
 
