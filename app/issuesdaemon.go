@@ -70,6 +70,7 @@ func RunIssuesDaemon() error {
 	ready := map[string]bool{}      // projects already on a fresh base for their new batch
 	saidBase := map[string]string{} // last "not starting a new batch yet" reason logged
 	limitDone := map[string]bool{}  // sessions already resumed after a usage limit
+	colored := loadColors()         // the /color cs gave each issue session ("" = the user's own)
 	nextLimitCheck := time.Time{}
 	nextScan := time.Time{}
 
@@ -88,6 +89,7 @@ func RunIssuesDaemon() error {
 			nextLimitCheck = time.Now().Add(15 * time.Second)
 			if list, _, err := session.ListExternalSessions(); err == nil {
 				resumeAfterLimit(list, limitDone, time.Now())
+				colorIssueSessions(list, colored)
 			}
 		}
 
@@ -195,6 +197,18 @@ func RunIssuesDaemon() error {
 			// an issue is about to start; once its PR exists, the batch
 			// continues on that branch.
 			if pr == 0 && !ready[p] {
+				// Switching branches under a working session moved its
+				// commits onto main (practice-stack, 6 Oct 11:12: "1 running",
+				// tree clean for that moment). The switch waits until no
+				// Claude session is open in the project at all.
+				if running > 0 {
+					why := fmt.Sprintf("%d session(s) still open; the switch to an up-to-date main waits until they're closed", running)
+					if saidBase[p] != why {
+						saidBase[p] = why
+						logEvent("daemon: %s: not starting a new batch yet: %s", filepath.Base(p), why)
+					}
+					continue
+				}
 				if ok, why := freshBase(p); !ok {
 					if saidBase[p] != why {
 						saidBase[p] = why
