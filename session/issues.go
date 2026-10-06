@@ -27,6 +27,25 @@ type Issue struct {
 	PRBot bool `json:"-"`
 	// PRMerged: that PR is already merged; the issue still counts as taken.
 	PRMerged bool `json:"-"`
+	// QAFailed: testing failed after its PR was merged (label qa:failed, put
+	// on after that merge). It is free again: PR stays 0 until a new PR
+	// takes it.
+	QAFailed bool `json:"-"`
+	Labels   []struct {
+		Name string `json:"name"`
+	} `json:"labels"`
+}
+
+// qaFailedLabel is what testers put on an issue whose fix failed testing.
+const qaFailedLabel = "qa:failed"
+
+func (is Issue) hasLabel(name string) bool {
+	for _, l := range is.Labels {
+		if l.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // ListOpenIssues returns the open issues of the GitHub repo in dir, oldest
@@ -36,7 +55,7 @@ func ListOpenIssues(dir string) ([]Issue, error) {
 	prs := make(chan map[int]prRef, 1)
 	go func() { prs <- openPRIssues(dir) }()
 	cmd := exec.Command("gh", "issue", "list", "--state", "open", "--limit", "100",
-		"--json", "number,title,url,body,createdAt")
+		"--json", "number,title,url,body,createdAt,labels")
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
@@ -54,6 +73,12 @@ func ListOpenIssues(dir string) ([]Issue, error) {
 		// Some titles are pasted with line breaks; one line keeps the list readable.
 		issues[i].Title = strings.Join(strings.Fields(issues[i].Title), " ")
 		ref := inPR[issues[i].Number]
+		// Failed testing after its PR merged: back in the queue, unless a
+		// newer PR already took it again.
+		if ref.merged && issues[i].hasLabel(qaFailedLabel) && qaFailedAfter(dir, issues[i].Number, ref.mergedAt) {
+			issues[i].QAFailed = true
+			continue
+		}
 		issues[i].PR, issues[i].PRBot, issues[i].PRMerged = ref.number, ref.bot, ref.merged
 	}
 	sort.Slice(issues, func(i, j int) bool { return issues[i].CreatedAt.Before(issues[j].CreatedAt) })
@@ -62,9 +87,25 @@ func ListOpenIssues(dir string) ([]Issue, error) {
 
 // prRef is the open PR closing an issue and whether a bot opened it.
 type prRef struct {
-	number int
-	bot    bool
-	merged bool // the PR is merged: the issue is taken, the PR has no room
+	number   int
+	bot      bool
+	merged   bool // the PR is merged: the issue is taken, the PR has no room
+	mergedAt time.Time
+}
+
+// qaFailedAfter reports whether the issue got the qa:failed label after
+// mergedAt, i.e. the merged fix failed testing. An issue labelled before its
+// latest merge (a re-fix merged since) stays taken until testing says again.
+func qaFailedAfter(dir string, number int, mergedAt time.Time) bool {
+	cmd := exec.Command("gh", "api", fmt.Sprintf("repos/{owner}/{repo}/issues/%d/events?per_page=100", number),
+		"--jq", `[.[] | select(.event=="labeled" and .label.name=="`+qaFailedLabel+`") | .created_at] | last // ""`)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	at, err := time.Parse(time.RFC3339, strings.TrimSpace(string(out)))
+	return err == nil && at.After(mergedAt)
 }
 
 // openPRIssues maps each issue an open PR closes to that PR. On error it is
@@ -78,15 +119,16 @@ func openPRIssues(dir string) map[int]prRef {
 	// didn't close it) was worked on already: it is taken too (#944).
 	for _, state := range []string{"merged", "open"} {
 		cmd := exec.Command("gh", "pr", "list", "--state", state, "--limit", "100",
-			"--json", "number,closingIssuesReferences,author")
+			"--json", "number,closingIssuesReferences,author,mergedAt")
 		cmd.Dir = dir
 		out, err := cmd.Output()
 		if err != nil {
 			continue
 		}
 		var prs []struct {
-			Number int `json:"number"`
-			Closes []struct {
+			Number   int       `json:"number"`
+			MergedAt time.Time `json:"mergedAt"`
+			Closes   []struct {
 				Number int `json:"number"`
 			} `json:"closingIssuesReferences"`
 			Author struct {
@@ -100,7 +142,11 @@ func openPRIssues(dir string) map[int]prRef {
 		for _, pr := range prs {
 			bot := pr.Author.IsBot || strings.HasPrefix(pr.Author.Login, "app/") || strings.HasSuffix(pr.Author.Login, "[bot]")
 			for _, is := range pr.Closes {
-				m[is.Number] = prRef{number: pr.Number, bot: bot, merged: state == "merged"}
+				// The latest merge counts: a re-fix merged after a failed test.
+				if old, ok := m[is.Number]; ok && old.merged && state == "merged" && old.mergedAt.After(pr.MergedAt) {
+					continue
+				}
+				m[is.Number] = prRef{number: pr.Number, bot: bot, merged: state == "merged", mergedAt: pr.MergedAt}
 			}
 		}
 	}
