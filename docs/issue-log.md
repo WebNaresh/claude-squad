@@ -154,6 +154,24 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Came back (same day): `/stage` couldn't upload screenshots.** The claude.ai connectors (Glitchgrab) stayed signed in to the old account, so #2307 asked how to attach its shots. `/reload-plugins` reconnects them; the runner now types it right after `/remote-control`.
 - **Guard:** `TestAccountSwitch`; activity.log "claude.ai account changed, typed /remote-control and /reload-plugins" and "usage limit on the old account, typed continue". First live run: 10 tiles, 3 resumed from a limit.
 
+### Issues that failed testing never came back to the auto pickup
+- **Saw (2026-10-06):** #2268 failed testing (label `qa:failed`, reopened) but the issue picker hid it as "already in a PR (open or merged)", so no session picked it up again. 7 issues were stuck like this.
+- **Cause:** any merged PR closing an issue marked it taken (#944: avoid redoing merged work), with no exception for a fix that failed testing.
+- **Fix:** an issue with `qa:failed` that was labelled *after* its latest merged PR is free again. It shows as "(failed testing, again)" and the auto pickup takes it. If a newer re-fix PR is open or merged after the label, the issue stays taken (`session/issues.go` `qaFailedAfter`, one GitHub events call per qa:failed issue).
+- **Guard:** live probe on practise_stack: #2171, #2181, #2203, #2207, #2262, #2268, #2269 all free.
+
+### Issue sessions all look alike in Claude (no /color)
+- **Saw (2026-10-06):** the user ran `/color` by hand in #2207 to tell sessions apart and asked for every issue session to get one when it starts.
+- **Fix:** the background runner types `/color <colour>` into each issue session once Claude's prompt is up and empty. Claude applies it at once even while busy and doesn't send it as a message (tested on a throwaway Claude). Each session gets a colour no other session of its project has. A colour the user set is kept. Picks are saved in `~/.claude-squad/session-colors.json`, so a restart doesn't colour a session twice. The cs tile uses the same colour (`session.AgentColor` reads `agent-color` from the transcript, only new bytes). A new tile kept its old colour because a transcript not found yet was remembered as missing for good; now it is looked for again after 5s. Files: `app/sessioncolor.go`, `session/agentcolor.go`, `app/closeghost.go`.
+- **Came up on the first run:** picks made in one pass all saw the same free colours (Claude saves `/color` a moment later), so #2268 and #2269 got the same colours as #2171 and #2181. Picks now count as taken right away. The user then asked that a colour only ever be set at the very start: a session is coloured once, within 3 minutes of Claude starting (`startedAt` in `~/.claude/sessions/<pid>.json`), and never changed after that. The clash re-colouring was removed.
+- **Guard:** `TestAgentColorReadsLatest`; activity.log "typed /color <colour>".
+
+### cs switched practice-stack from dev to main while sessions were coding
+- **Saw (2026-10-06):** the branch went from dev to main mid-work. The sessions' new commits (23 by 12:30) landed on local main.
+- **Cause:** the new-batch cleanup (`freshBase`, added 3 Oct) ran at 11:12. It ran because cs saw no open PR with issues. PR #2355 had been opened a minute earlier, but gai's model refused to write its body ("I apologize, but I cannot assist…"), so it listed no "Closes #…". The guard only checked for a clean working tree, which it was for that instant, while 1 session was still running.
+- **Fix:** the switch now waits until no Claude session is open in the project, and refuses while any PR is open from the current branch (`app/issuesdaemon.go`, `app/batchbase.go`).
+- **Guard:** activity.log "not starting a new batch yet: N session(s) still open" / "PR #N is still open from dev".
+
 ## Test incidents (rules for live tests)
 
 - A test pressed Enter on the user's real session and moved it. → Check the selected row on screen before any destructive key (CLAUDE.md "Live tests").
