@@ -5,8 +5,10 @@ import (
 	"claude-squad/session"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -171,6 +173,16 @@ func RunIssuesDaemon() error {
 				writeIssueCache(p, list) // the window's strip reads it
 			}
 			room, pr := prRoom(issues[p])
+			// A PR already open from the checked-out branch is this batch's
+			// PR even when it lists no issues yet (gai's body can come out
+			// without "Closes #…", like glitchgrab #577): keep going on it,
+			// with no branch switch. Without this, the batch waited for the
+			// cleanup, which waits for every session to close.
+			if pr == 0 {
+				if n := openPRHere(p); n > 0 {
+					pr, room = n, autoMaxPerPR
+				}
+			}
 			if room <= 0 {
 				if key := fmt.Sprint(pr, "full"); said[p] != key {
 					said[p] = key
@@ -311,4 +323,19 @@ func modTime(path string) time.Time {
 		return st.ModTime()
 	}
 	return time.Time{}
+}
+
+// openPRHere is the open PR from the project's checked-out branch, or 0.
+func openPRHere(project string) int {
+	out, err := exec.Command("git", "-C", project, "branch", "--show-current").Output()
+	cur := strings.TrimSpace(string(out))
+	if err != nil || cur == "" {
+		return 0
+	}
+	n, err := openPRFrom(project, cur)
+	if err != nil {
+		return 0
+	}
+	v, _ := strconv.Atoi(n)
+	return v
 }
