@@ -70,6 +70,17 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Guard:** `TestPathAtWrapped`, `TestPathAtRelative`, `TestPathAtSentImages`.
 - **Came back (2026-10-02):** clicking a sent image (`[image] …/before-booking-details.png`) opened its parent folder. Claude prints the file size at the right edge of the wrapped path ("(283.9K" … "B)") and labels it `[image]`; joining the rows glued those into the path, and two files listed back to back joined into one. The guard only tested a plain wrapped path. Fix: `wrapRow` cuts the size and label before joining; the path finder moves past a path that ends above the click; the path under the click is checked before the image-name match; images open in Preview (or the image page if Claude sent them).
 
+### Which model is each session running? (gai model: labels)
+- **Asked (2026-10-07, via glitchgrab#576):** gai now starts issue sessions with `--model sonnet` / `--model 'opus[1m]'` from the issue's `model:` label; the user wants to see that per session.
+- **Fix:** every Claude tile's header shows a small model tag before its status: sonnet (green), opus (purple), others grey, with `[1m]` when the process was started with `--model …[1m]`. The model comes from the latest reply in the session's transcript ("model":"claude-sonnet-5-5"); before the first reply, from the process's `--model` argument (`session.AgentModel`; the pid is found in `~/.claude/sessions/*.json`).
+- **Guard:** `TestShortModel`.
+
+### Clicking a sent image opened a Finder folder
+- **Saw (2026-10-07):** in #2337, clicking the "› [image] /private/tmp/…/d9c6d7c1-…-8c2b2aa13b0" line opened Finder on the project's scratchpad parent (a list of session folders), not the screenshot.
+- **Cause:** the tile is narrower than the session's screen, so the line was cut before the file name. The path click takes the longest part that exists (a parent folder), and the match by file name had no file name to match.
+- **Fix:** when a click resolves to a folder on a "›" sent-file line, the cut text is matched against the start of the files the session sent. Several with the same start (before and after in one folder) are told apart by the line's place in the list. The image page opens on that file (`cutImageAt`, `app/mouseclick.go`).
+- **Guard:** `TestCutImageAt`; activity.log "clicked a cut-off image path".
+
 ### Wheel scrolling recalled Claude's prompt history / didn't scroll
 - **Saw:** the wheel typed old prompts; `claude attach` tiles didn't scroll; slow wheel notches leaked as arrow keys.
 - **Fix:** burst detection (10ms gap, 300ms sticky window); SGR wheel events to alternate-screen panes, tmux copy-mode otherwise (`app/livepane.go`).
@@ -171,6 +182,13 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Cause:** the new-batch cleanup (`freshBase`, added 3 Oct) ran at 11:12. It ran because cs saw no open PR with issues. PR #2355 had been opened a minute earlier, but gai's model refused to write its body ("I apologize, but I cannot assist…"), so it listed no "Closes #…". The guard only checked for a clean working tree, which it was for that instant, while 1 session was still running.
 - **Fix:** the switch now waits until no Claude session is open in the project, and refuses while any PR is open from the current branch (`app/issuesdaemon.go`, `app/batchbase.go`).
 - **Guard:** activity.log "not starting a new batch yet: N session(s) still open" / "PR #N is still open from dev".
+- **Side effect (2026-10-07):** glitchgrab stopped picking up issues. #542 (done, but still open) kept the cleanup waiting, and the new PR #577 (dev → main) listed no "Closes #…", so cs saw no batch PR. Now an open PR from the checked-out branch counts as the batch's PR even with no issues listed (`openPRHere`, `app/issuesdaemon.go`); the batch continues on it with no switch. Live: 22:11 "PR #577 room 15: queued 4 issue(s)".
+
+### 189 zombie processes under cs
+- **Saw (2026-10-08):** while checking why the Mac was slow, 189 `<defunct>` processes, all children of the cs process (up for 6 days).
+- **Cause:** cs restarts itself in place (syscall.Exec, self-update). Helper commands (tmux, git, gh) still running at that moment lost their waiter, and each became a zombie when it ended. They use no RAM or CPU, only process slots.
+- **Fix:** `reapLeftoverChildren` in `main.go` collects finished children at startup, before this run starts any of its own.
+- **Guard:** `ps -Ao ppid,stat | awk '$2 ~ /Z/'` under cs's pid should be near 0 after a self-update.
 
 ## Test incidents (rules for live tests)
 
