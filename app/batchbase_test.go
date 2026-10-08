@@ -22,6 +22,11 @@ func gitT(t *testing.T, dir string, args ...string) string {
 // up-to-date main: merged branches go, unmerged ones stay, and nothing
 // moves while there are uncommitted changes.
 func TestFreshBaseAfterMerge(t *testing.T) {
+	openPR := ""
+	old := openPRFrom
+	openPRFrom = func(string, string) (string, error) { return openPR, nil }
+	defer func() { openPRFrom = old }()
+
 	root := t.TempDir()
 	origin := filepath.Join(root, "origin.git")
 	gitT(t, root, "init", "-q", "--bare", "-b", "main", origin)
@@ -57,6 +62,16 @@ func TestFreshBaseAfterMerge(t *testing.T) {
 		t.Fatalf("switched to %s over uncommitted work", b)
 	}
 	os.Remove(filepath.Join(repo, "dirty.txt"))
+
+	// A PR still open from dev (even one listing no issues): refuse, stay on dev.
+	openPR = "2355"
+	if ok, why := freshBase(repo); ok || !strings.Contains(why, "#2355") {
+		t.Fatalf("open PR from dev: ok=%v why=%q", ok, why)
+	}
+	if b := gitT(t, repo, "branch", "--show-current"); b != "dev" {
+		t.Fatalf("switched to %s while PR #2355 is open from dev", b)
+	}
+	openPR = ""
 
 	if ok, why := freshBase(repo); !ok {
 		t.Fatalf("clean tree refused: %s", why)
