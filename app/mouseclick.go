@@ -3,6 +3,7 @@ package app
 import (
 	"claude-squad/session"
 	"claude-squad/ui"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -198,6 +199,14 @@ func (m *home) clickAt(hit gridHit, e *session.ExternalSession, x int) tea.Cmd {
 		if isImage(p) && slices.Contains(sentFiles(e), p) {
 			return openGallery(e, p)
 		}
+		// A sent image's line cut off by the tile's edge ("…/d9c6d7c1-…-8c2b2aa13b0")
+		// resolves only to a parent folder; Finder opened instead of the image.
+		if st, err := os.Stat(p); err == nil && st.IsDir() {
+			if f := cutImageAt(hit.lines, hit.row, sentFiles(e)); f != "" {
+				logEvent("clicked a cut-off image path in %s: %s", e.Name, filepath.Base(f))
+				return openGallery(e, f)
+			}
+		}
 		return openPath(p)
 	}
 	if file := imageAt(hit.lines, hit.row, e); file != "" {
@@ -251,4 +260,74 @@ func imageAt(lines []string, row int, e *session.ExternalSession) string {
 		}
 	}
 	return best
+}
+
+// cutImageAt finds the sent file whose path starts with the text of the
+// "›" block at row, when the tile cut that text before the file name. Sent
+// files sharing that start (a before and an after in one folder) are told
+// apart by the block's place among the consecutive "›" blocks around it:
+// Claude lists them in the order they were sent.
+func cutImageAt(lines []string, row int, files []string) string {
+	isStart := func(l string) bool { return strings.HasPrefix(strings.TrimSpace(l), "›") }
+	start := row
+	for start > 0 && row-start < 6 && !isStart(lines[start]) {
+		start--
+	}
+	if !isStart(lines[start]) {
+		return ""
+	}
+	text := func(r int) string {
+		var b strings.Builder
+		for i := r; i < len(lines) && (i == r || !isStart(lines[i])) && strings.TrimSpace(lines[i]) != ""; i++ {
+			b.WriteString(wrapRow(lines[i]))
+		}
+		t := b.String()
+		if i := strings.Index(t, "/"); i >= 0 {
+			t = t[i:]
+		}
+		return strings.TrimSpace(t)
+	}
+	prefix := text(start)
+	if len(prefix) < 20 {
+		return ""
+	}
+	var matches []string
+	for _, f := range files {
+		if strings.HasPrefix(f, prefix) {
+			matches = append(matches, f)
+		}
+	}
+	if len(matches) == 0 {
+		return ""
+	}
+	// The consecutive "›" blocks with the same cut text, and which one this is.
+	first := start
+	for r := start - 1; r >= 0 && r >= start-12; r-- {
+		if isStart(lines[r]) {
+			if text(r) != prefix {
+				break
+			}
+			first = r
+		} else if strings.TrimSpace(lines[r]) == "" {
+			break
+		}
+	}
+	idx, n := 0, 0
+	for r := first; r < len(lines) && r <= first+24; r++ {
+		if isStart(lines[r]) {
+			if text(r) != prefix {
+				break
+			}
+			if r == start {
+				idx = n
+			}
+			n++
+		} else if strings.TrimSpace(lines[r]) == "" {
+			break
+		}
+	}
+	if k := len(matches) - n + idx; k >= 0 && k < len(matches) {
+		return matches[k]
+	}
+	return matches[len(matches)-1]
 }
