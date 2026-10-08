@@ -26,6 +26,18 @@ func freshBase(project string) (ok bool, why string) {
 	if out, _ := git("status", "--porcelain"); out != "" {
 		return false, "uncommitted changes (sessions still finishing)"
 	}
+	// A PR open from this branch means the batch isn't over, even when
+	// cs can't see its issues (#2355's body came out empty: gai's model
+	// refused, so it listed no "Closes #…" and cs switched to main under it).
+	if cur, _ := git("branch", "--show-current"); cur != "" {
+		n, err := openPRFrom(project, cur)
+		if err != nil {
+			return false, "can't check open PRs: " + err.Error()
+		}
+		if n != "" {
+			return false, "PR #" + n + " is still open from " + cur
+		}
+	}
 	if out, err := git("fetch", "-q", "origin", "--prune"); err != nil {
 		return false, "fetch failed: " + firstLineOf(out)
 	}
@@ -55,4 +67,16 @@ func freshBase(project string) (ok bool, why string) {
 	}
 	logEvent("daemon: %s: new batch starts on an up-to-date %s (deleted merged: %s)", filepath.Base(project), def, strings.Join(deleted, ", "))
 	return true, ""
+}
+
+// openPRFrom returns the number of an open PR whose head is branch, or "".
+// A variable so tests (repos without GitHub) can stand in for gh.
+var openPRFrom = func(project, branch string) (string, error) {
+	cmd := exec.Command("gh", "pr", "list", "--state", "open", "--head", branch, "--json", "number", "--jq", ".[].number")
+	cmd.Dir = project
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return firstLineOf(strings.TrimSpace(string(out))), nil
 }
