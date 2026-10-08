@@ -34,6 +34,9 @@ type GridTile struct {
 	// Ghost: a just-closed session's place, kept a few seconds before the
 	// tiles close the gap (app/closeghost.go).
 	Ghost bool
+	// Model is the Claude model the session runs ("sonnet", "opus[1m]"),
+	// shown as a small tag before the status.
+	Model string
 }
 
 // Smallest useful tile (columns × rows, border included); the grid fits as
@@ -164,6 +167,9 @@ func RenderTile(t GridTile, focused bool, w, h int) string {
 		status = gridNeedsStyle.Render(" needs you ")
 		titleText = "❓ " + titleText
 	}
+	if t.Model != "" && !t.Ghost {
+		status = modelTag(t.Model) + status
+	}
 	if focused && !t.Ghost {
 		// Said in words on the right too, where the name tag can't be cut.
 		status = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#ffffff")).Render(" ◀ SELECTED ") + " " + status
@@ -202,6 +208,19 @@ func RenderTile(t GridTile, focused bool, w, h int) string {
 	}
 	body := lipgloss.NewStyle().Width(w).Render(strings.Join(lines, "\n"))
 	return top + "\n" + style.BorderTop(false).Padding(0, 1).Width(w+2).Render(body)
+}
+
+// modelTag draws the session's model as a small tag: sonnet green, opus
+// purple, others grey, so the routing (gai's model: labels) shows at a glance.
+func modelTag(model string) string {
+	bg := lipgloss.Color("#3c3c3c")
+	switch {
+	case strings.HasPrefix(model, "sonnet"):
+		bg = lipgloss.Color("#2f6f3e")
+	case strings.HasPrefix(model, "opus"):
+		bg = lipgloss.Color("#6a3d9a")
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Background(bg).Render(" "+model+" ") + " "
 }
 
 // cutKeepingIssue shortens a tile name to w cells, cutting the middle so
