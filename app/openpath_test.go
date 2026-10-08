@@ -113,3 +113,25 @@ func TestPathAtAfterSentence(t *testing.T) {
 		}
 	}
 }
+
+func TestCutImageAt(t *testing.T) {
+	dir := "/private/tmp/claude-501/-Users-x-practice-stack/d9c6d7c1-d02c-4fe3-9914-8c2b2aa13b0e/scratchpad"
+	files := []string{dir + "/older.png", dir + "/before.png", dir + "/after-highlighted.png"}
+	cut := "/private/tmp/claude-501/-Users-x-practice-stack/d9c6d7c1-d02c-4fe3-9914-8c2b2aa13b0"
+	lines := []string{
+		"Before (old code) vs after (boxed): the streak chip looks the same",
+		"",
+		"› [image] " + cut,
+		"› [image] " + cut,
+		"",
+	}
+	if got := cutImageAt(lines, 2, files); got != dir+"/before.png" {
+		t.Errorf("first row = %q, want before.png", got)
+	}
+	if got := cutImageAt(lines, 3, files); got != dir+"/after-highlighted.png" {
+		t.Errorf("second row = %q, want after-highlighted.png", got)
+	}
+	if got := cutImageAt(lines, 0, files); got != "" {
+		t.Errorf("plain text row = %q, want none", got)
+	}
+}
