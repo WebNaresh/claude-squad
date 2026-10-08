@@ -239,7 +239,8 @@ func captureTile(j gridJob, w, h int) ui.GridTile {
 		return t
 	}
 	e := j.row.External
-	t := ui.GridTile{Title: e.Title(), NeedsYou: e.NeedsYou(), Status: e.Status, Stage: session.StagePhase(e.SessionID)}
+	t := ui.GridTile{Title: e.Title(), NeedsYou: e.NeedsYou(), Status: e.Status, Stage: session.StagePhase(e.SessionID),
+		Model: session.AgentModel(e.SessionID, e.Pid)}
 	if j.dup {
 		t.Stage = "⚠ same conversation open in 2 tiles · close one"
 	}
@@ -530,7 +531,7 @@ func (m *home) renderGridCached() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d|%d|%d|%d|", focus, m.paneWidth, m.contentHeight, m.ghostIdx())
 	for _, t := range tiles {
-		fmt.Fprintf(&b, "%s|%s|%v|%d|", t.Title, t.Status, t.NeedsYou, len(t.Content))
+		fmt.Fprintf(&b, "%s|%s|%s|%v|%d|", t.Title, t.Status, t.Model, t.NeedsYou, len(t.Content))
 		b.WriteString(t.Content)
 	}
 	// The progress strip sits in the row above the tiles (progress.go).
