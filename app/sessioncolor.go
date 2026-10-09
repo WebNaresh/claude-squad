@@ -18,13 +18,17 @@ import (
 // applies it at once even while it works; it is not sent as a message.
 // A colour the user set by hand is kept.
 
-// claudeColors are the colours /color accepts, with how cs draws each.
+// claudeColors are the colours /color accepts, drawn exactly as Claude draws
+// them: Claude uses these 256-colour palette entries (read off its screen, 9
+// Oct; Terminal.app has no true colour), so a tile's frame is the same shade
+// as the session's own prompt box. cs's own hexes were visibly different
+// (a sand yellow next to Claude's gold).
 var claudeColors = []struct {
 	name string
 	hex  lipgloss.Color
 }{
-	{"red", "#e06c75"}, {"blue", "#61afef"}, {"green", "#98c379"}, {"yellow", "#e5c07b"},
-	{"purple", "#c678dd"}, {"orange", "#d19a66"}, {"pink", "#ff79c6"}, {"cyan", "#56b6c2"},
+	{"red", "167"}, {"blue", "110"}, {"green", "35"}, {"yellow", "178"},
+	{"purple", "140"}, {"orange", "174"}, {"pink", "175"}, {"cyan", "37"},
 }
 
 // claudeColorHex is how cs draws a /color name, or "".
@@ -62,8 +66,11 @@ func colorIssueSessions(sessions []*session.ExternalSession, typed map[string]st
 		if _, done := typed[e.SessionID]; done {
 			continue
 		}
-		started := session.StartedAt(e.Pid)
-		if started.IsZero() || time.Since(started) > colorStartWindow || session.AgentColor(e.SessionID) != "" {
+		started := session.SessionStartedAt(e.SessionID, e.Pid)
+		if started.IsZero() {
+			continue // its ~/.claude/sessions file isn't there yet: look again next pass
+		}
+		if time.Since(started) > colorStartWindow || session.AgentColor(e.SessionID) != "" {
 			typed[e.SessionID] = "" // already working, or coloured by the user: leave it
 			saveColors(typed)
 			continue
