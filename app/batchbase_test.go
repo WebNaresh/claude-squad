@@ -90,3 +90,50 @@ func TestFreshBaseAfterMerge(t *testing.T) {
 		t.Errorf("unmerged wip deleted: %q", branches)
 	}
 }
+
+func TestIsGaiPromptBranchName(t *testing.T) {
+	for line, want := range map[string]bool{
+		"Branch name [dev] (n to abort):":                                    true,
+		"Create a PR for #585? [Y/n]":                                        true,
+		"Extra instructions for Claude (optional — Ctrl+V pastes an image):": true,
+		"On 'main' — a PR needs a feature branch.":                           false,
+		"Branch name is dev":                                                 false,
+	} {
+		if got := isGaiPrompt(line); got != want {
+			t.Errorf("isGaiPrompt(%q) = %v, want %v", line, got, want)
+		}
+	}
+}
+
+// A dev that is only an older main is deleted so gai cuts a fresh one; a dev
+// with its own work holds the batch back instead of being switched to.
+func TestStaleDev(t *testing.T) {
+	repo := t.TempDir()
+	gitT(t, repo, "init", "-q", "-b", "main")
+	os.WriteFile(filepath.Join(repo, "a.txt"), []byte("a"), 0o644)
+	gitT(t, repo, "add", "a.txt")
+	gitT(t, repo, "commit", "-q", "-m", "a")
+	gitT(t, repo, "branch", "dev")
+	os.WriteFile(filepath.Join(repo, "b.txt"), []byte("b"), 0o644)
+	gitT(t, repo, "add", "b.txt")
+	gitT(t, repo, "commit", "-q", "-m", "b")
+
+	if why := staleDev(repo); why != "" {
+		t.Fatalf("older-main dev: why=%q", why)
+	}
+	if strings.Contains(gitT(t, repo, "branch", "--format=%(refname:short)"), "dev") {
+		t.Fatal("older-main dev not deleted")
+	}
+
+	gitT(t, repo, "checkout", "-q", "-b", "dev")
+	os.WriteFile(filepath.Join(repo, "c.txt"), []byte("c"), 0o644)
+	gitT(t, repo, "add", "c.txt")
+	gitT(t, repo, "commit", "-q", "-m", "c")
+	gitT(t, repo, "checkout", "-q", "main")
+	if why := staleDev(repo); why == "" {
+		t.Fatal("dev with its own work: want a reason")
+	}
+	if !strings.Contains(gitT(t, repo, "branch", "--format=%(refname:short)"), "dev") {
+		t.Fatal("dev with its own work was deleted")
+	}
+}
