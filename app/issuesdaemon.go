@@ -213,15 +213,32 @@ func RunIssuesDaemon() error {
 				// commits onto main (practice-stack, 6 Oct 11:12: "1 running",
 				// tree clean for that moment). The switch waits until no
 				// Claude session is open in the project at all.
-				if running > 0 {
+				// Already on the default branch: nothing to switch, so an open
+				// session (glitchgrab #542, kept open for days) mustn't hold
+				// the batch back. Start from main as it is; the pull waits
+				// for a moment with no session open (it would change their files).
+				onMain, why := running > 0 && onDefaultBranch(p), ""
+				if onMain {
+					why = staleDev(p)
+				}
+				if why != "" {
+					if saidBase[p] != why {
+						saidBase[p] = why
+						logEvent("daemon: %s: not starting a new batch yet: %s", filepath.Base(p), why)
+					}
+					continue
+				} else if onMain {
+					ready[p] = true
+					delete(saidBase, p)
+					logEvent("daemon: %s: new batch starts on the current main (%d session(s) open, so no pull now)", filepath.Base(p), running)
+				} else if running > 0 {
 					why := fmt.Sprintf("%d session(s) still open; the switch to an up-to-date main waits until they're closed", running)
 					if saidBase[p] != why {
 						saidBase[p] = why
 						logEvent("daemon: %s: not starting a new batch yet: %s", filepath.Base(p), why)
 					}
 					continue
-				}
-				if ok, why := freshBase(p); !ok {
+				} else if ok, why := freshBase(p); !ok {
 					if saidBase[p] != why {
 						saidBase[p] = why
 						logEvent("daemon: %s: not starting a new batch yet: %s", filepath.Base(p), why)
@@ -338,4 +355,44 @@ func openPRHere(project string) int {
 	}
 	v, _ := strconv.Atoi(n)
 	return v
+}
+
+// onDefaultBranch reports whether project has its default branch (origin's
+// HEAD, else main) checked out.
+func onDefaultBranch(project string) bool {
+	def := "main"
+	if out, err := exec.Command("git", "-C", project, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").Output(); err == nil {
+		if d, ok := strings.CutPrefix(strings.TrimSpace(string(out)), "origin/"); ok {
+			def = d
+		}
+	}
+	out, err := exec.Command("git", "-C", project, "branch", "--show-current").Output()
+	return err == nil && strings.TrimSpace(string(out)) == def
+}
+
+// staleDev says why an existing local "dev" would change files if gai
+// switched to it (it has work that isn't in the checked-out main), or "".
+// A dev that is only an older copy of main is deleted instead. gai cuts the
+// batch's branch as dev and reuses one that exists; with sessions open that
+// switch must not touch their files.
+func staleDev(project string) string {
+	if exec.Command("git", "-C", project, "rev-parse", "--verify", "-q", "refs/heads/dev").Run() != nil {
+		return "" // no dev: gai makes it from main, nothing changes
+	}
+	if exec.Command("git", "-C", project, "diff", "--quiet", "HEAD", "dev").Run() == nil {
+		return "" // same files as main
+	}
+	// Only an older copy of main (its files equal one of main's last 50
+	// commits, e.g. before the release commits): nothing of its own, so it is
+	// deleted (the user agreed, 9 Oct) and gai makes a fresh dev from main.
+	out, _ := exec.Command("git", "-C", project, "rev-list", "--first-parent", "-50", "HEAD").Output()
+	for _, c := range strings.Fields(string(out)) {
+		if exec.Command("git", "-C", project, "diff", "--quiet", c, "dev").Run() == nil {
+			if exec.Command("git", "-C", project, "branch", "-D", "dev").Run() == nil {
+				logEvent("daemon: %s: deleted the old local dev (same files as main at %.8s, nothing of its own)", filepath.Base(project), c)
+				return ""
+			}
+		}
+	}
+	return "an old local dev branch has work that isn't in main; gai would switch to it under the open sessions. Merge or delete it, or close the sessions"
 }
