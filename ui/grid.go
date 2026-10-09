@@ -149,7 +149,13 @@ func RenderTile(t GridTile, focused bool, w, h int) string {
 		border, color = lipgloss.NormalBorder(), lipgloss.Color("#e06c75")
 		style = style.Border(border).BorderForeground(color)
 	case focused:
-		style, border, color = gridFocusStyle, lipgloss.DoubleBorder(), lipgloss.Color("#ffffff")
+		// Selected: a double frame in the session's own colour (so it still
+		// matches Claude's /color), white only for a tile without one.
+		color = lipgloss.Color("#ffffff")
+		if t.Accent != "" {
+			color = t.Accent
+		}
+		style, border = gridFocusStyle, lipgloss.DoubleBorder()
 		style = style.Border(border).BorderForeground(color)
 	case t.Accent != "":
 		border, color = lipgloss.ThickBorder(), t.Accent
@@ -178,9 +184,14 @@ func RenderTile(t GridTile, focused bool, w, h int) string {
 	if t.Ghost {
 		titleStyle = titleStyle.Foreground(lipgloss.Color("#ffffff")).Background(lipgloss.Color("#be5046")).Padding(0, 1)
 	} else if focused {
-		// The selected tile reads as selected from across the room: a white
-		// tag with an arrow, on top of its white double frame.
-		titleStyle = titleStyle.Bold(true).Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#ffffff")).Padding(0, 1)
+		// The selected tile reads as selected from across the room: a bold
+		// tag with an arrow in its own colour (white without one), its double
+		// frame, and the white "◀ SELECTED" label on the right.
+		bg := lipgloss.Color("#ffffff")
+		if t.Accent != "" {
+			bg = t.Accent
+		}
+		titleStyle = titleStyle.Bold(true).Foreground(lipgloss.Color("#000000")).Background(bg).Padding(0, 1)
 		titleText = "▶ " + titleText
 	} else if t.Accent != "" {
 		// The name as a solid tag in the session's colour.
