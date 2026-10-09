@@ -358,7 +358,10 @@ func (m *home) claudeRunningIn(name string) bool {
 // isGaiPrompt reports whether a gai issue screen line waits for an answer
 // whose default (Enter) is right for an unattended run.
 func isGaiPrompt(line string) bool {
-	return strings.Contains(line, "[Y/n]") || strings.HasPrefix(line, "Extra instructions for Claude")
+	return strings.Contains(line, "[Y/n]") || strings.HasPrefix(line, "Extra instructions for Claude") ||
+		// On main, gai asks for the PR's branch: Enter takes its default, dev,
+		// cut from main (a batch can now start on main; glitchgrab #585 sat here).
+		(strings.HasPrefix(line, "Branch name [") && strings.Contains(line, "(n to abort)"))
 }
 
 // moreQueuedIn reports whether another picked issue of project waits its turn.
