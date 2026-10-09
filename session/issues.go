@@ -27,26 +27,14 @@ type Issue struct {
 	PRBot bool `json:"-"`
 	// PRMerged: that PR is already merged; the issue still counts as taken.
 	PRMerged bool `json:"-"`
-	// QAFailed: testing failed after its PR was merged (label qa:failed, put
-	// on after that merge). It is free again: PR stays 0 until a new PR
-	// takes it.
+	// QAFailed: testing failed after its PR was merged (label qa:failed put
+	// on, or the issue reopened, after that merge). It is free again: PR
+	// stays 0 until a new PR takes it.
 	QAFailed bool `json:"-"`
-	Labels   []struct {
-		Name string `json:"name"`
-	} `json:"labels"`
 }
 
 // qaFailedLabel is what testers put on an issue whose fix failed testing.
 const qaFailedLabel = "qa:failed"
-
-func (is Issue) hasLabel(name string) bool {
-	for _, l := range is.Labels {
-		if l.Name == name {
-			return true
-		}
-	}
-	return false
-}
 
 // ListOpenIssues returns the open issues of the GitHub repo in dir, oldest
 // first (the order they should be worked on), each with the open PR that
@@ -55,7 +43,7 @@ func ListOpenIssues(dir string) ([]Issue, error) {
 	prs := make(chan map[int]prRef, 1)
 	go func() { prs <- openPRIssues(dir) }()
 	cmd := exec.Command("gh", "issue", "list", "--state", "open", "--limit", "100",
-		"--json", "number,title,url,body,createdAt,labels")
+		"--json", "number,title,url,body,createdAt")
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
@@ -75,7 +63,7 @@ func ListOpenIssues(dir string) ([]Issue, error) {
 		ref := inPR[issues[i].Number]
 		// Failed testing after its PR merged: back in the queue, unless a
 		// newer PR already took it again.
-		if ref.merged && issues[i].hasLabel(qaFailedLabel) && qaFailedAfter(dir, issues[i].Number, ref.mergedAt) {
+		if ref.merged && qaFailedAfter(dir, issues[i].Number, ref.mergedAt) {
 			issues[i].QAFailed = true
 			continue
 		}
@@ -93,12 +81,15 @@ type prRef struct {
 	mergedAt time.Time
 }
 
-// qaFailedAfter reports whether the issue got the qa:failed label after
-// mergedAt, i.e. the merged fix failed testing. An issue labelled before its
-// latest merge (a re-fix merged since) stays taken until testing says again.
+// qaFailedAfter reports whether testing failed the issue after mergedAt
+// (its latest merged fix): it got the qa:failed label, or was reopened, after
+// that merge. A second failure often only reopens it: the label is still on
+// from the first time (#2268: re-fix #2354 merged 6 Oct 05:41, reopened 07:56,
+// no new label, and cs kept it as taken). Failed before the latest merge
+// (a re-fix merged since) → stays taken until testing says again.
 func qaFailedAfter(dir string, number int, mergedAt time.Time) bool {
 	cmd := exec.Command("gh", "api", fmt.Sprintf("repos/{owner}/{repo}/issues/%d/events?per_page=100", number),
-		"--jq", `[.[] | select(.event=="labeled" and .label.name=="`+qaFailedLabel+`") | .created_at] | last // ""`)
+		"--jq", `[.[] | select(.event=="reopened" or (.event=="labeled" and .label.name=="`+qaFailedLabel+`")) | .created_at] | last // ""`)
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
