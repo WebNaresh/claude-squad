@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/spf13/cobra"
 )
@@ -208,11 +209,28 @@ func init() {
 }
 
 func main() {
+	reapLeftoverChildren()
 	// Extract the binary name from how this was invoked
 	binName = filepath.Base(os.Args[0])
 	rootCmd.Use = binName
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
+	}
+}
+
+// reapLeftoverChildren collects child processes that already finished
+// before this program started. cs restarts itself in place (syscall.Exec,
+// app/selfupdate.go): helper commands still running at that moment lose
+// whoever was waiting for them, and each became a zombie of cs when it ended
+// (189 after 6 days). Nothing of this run has started a child yet, so no
+// one else is waiting on these.
+func reapLeftoverChildren() {
+	for {
+		var ws syscall.WaitStatus
+		pid, err := syscall.Wait4(-1, &ws, syscall.WNOHANG, nil)
+		if pid <= 0 || err != nil {
+			return
+		}
 	}
 }
