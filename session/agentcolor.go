@@ -153,6 +153,17 @@ func shortModel(m string) string {
 	return ""
 }
 
+// SessionStartedAt is when the Claude process running a session started
+// (zero if unknown yet). pid may be 0: tmux tiles don't record it, so it is
+// looked up by session ID (a zero pid once made every new session look "not
+// new" and no issue session got its /color).
+func SessionStartedAt(sessionID string, pid int) time.Time {
+	if pid <= 0 {
+		pid = pidOfSession(sessionID)
+	}
+	return StartedAt(pid)
+}
+
 // StartedAt is when the Claude process with this pid started, from
 // ~/.claude/sessions/<pid>.json (zero if unknown).
 func StartedAt(pid int) time.Time {
