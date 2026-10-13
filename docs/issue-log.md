@@ -70,6 +70,12 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Guard:** `TestPathAtWrapped`, `TestPathAtRelative`, `TestPathAtSentImages`.
 - **Came back (2026-10-02):** clicking a sent image (`[image] …/before-booking-details.png`) opened its parent folder. Claude prints the file size at the right edge of the wrapped path ("(283.9K" … "B)") and labels it `[image]`; joining the rows glued those into the path, and two files listed back to back joined into one. The guard only tested a plain wrapped path. Fix: `wrapRow` cuts the size and label before joining; the path finder moves past a path that ends above the click; the path under the click is checked before the image-name match; images open in Preview (or the image page if Claude sent them).
 
+### Clicking an image or its folder opened Finder / Preview, not a web page
+- **Saw (2026-10-13):** clicking an image path (or its scratchpad folder) in a tile opened Finder; the user wants the HTML page.
+- **Cause:** only files in the session's sent list went to the gallery page. Any other image went to `open` (Preview) and folders to Finder.
+- **Fix:** `openPath` now opens any image on a one-image page, and a folder that holds images (two levels deep, newest first) on a page of them. Only an empty folder or a PDF still uses `open` (`openFilesPage`, `imagesIn` in `app/gallery.go`).
+- **Guard:** `TestImagesIn`.
+
 ### Which model is each session running? (gai model: labels)
 - **Asked (2026-10-07, via glitchgrab#576):** gai now starts issue sessions with `--model sonnet` / `--model 'opus[1m]'` from the issue's `model:` label; the user wants to see that per session.
 - **Fix:** every Claude tile's header shows a small model tag before its status: sonnet (green), opus (purple), others grey, with `[1m]` when the process was started with `--model …[1m]`. The model comes from the latest reply in the session's transcript ("model":"claude-sonnet-5-5"); before the first reply, from the process's `--model` argument (`session.AgentModel`; the pid is found in `~/.claude/sessions/*.json`).
