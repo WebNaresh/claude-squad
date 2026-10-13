@@ -619,6 +619,10 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case prMsg:
 		m.applyPR(msg)
 		return m, nil
+	case pullStartMsg:
+		return m, m.startPull(msg.root)
+	case pullDoneMsg:
+		return m, m.pullDone(msg)
 	case pushStartMsg:
 		return m, m.startPush(msg.root)
 	case pushDoneMsg:
