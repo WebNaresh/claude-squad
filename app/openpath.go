@@ -130,8 +130,18 @@ func resolvePath(p, dir string) string {
 func openPath(p string) tea.Cmd {
 	return func() tea.Msg {
 		var cmd *exec.Cmd
-		if st, err := os.Stat(p); err == nil && (st.IsDir() || isImage(p)) {
-			cmd = exec.Command("open", p) // Finder, or Preview for an image
+		st, statErr := os.Stat(p)
+		// Images and folders of images open on a web page, never Finder/Preview.
+		if statErr == nil && !st.IsDir() && imageExts[strings.ToLower(filepath.Ext(p))] {
+			return openFilesPage(p, []string{p}, p)()
+		}
+		if statErr == nil && st.IsDir() {
+			if imgs := imagesIn(p); len(imgs) > 0 {
+				return openFilesPage(p, imgs, "")()
+			}
+		}
+		if statErr == nil && (st.IsDir() || isImage(p)) {
+			cmd = exec.Command("open", p) // empty folder, or a PDF
 		} else if code, err := exec.LookPath("code"); err == nil {
 			cmd = exec.Command(code, "-g", p)
 		} else {
