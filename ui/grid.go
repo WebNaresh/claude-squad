@@ -178,7 +178,7 @@ func RenderTile(t GridTile, focused bool, w, h int) string {
 	}
 	if focused && !t.Ghost {
 		// Said in words on the right too, where the name tag can't be cut.
-		status = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#ffffff")).Render(" ◀ SELECTED ") + " " + status
+		status = selectedTag() + " " + status
 	}
 	titleStyle := gridTitleStyle
 	if t.Ghost {
@@ -218,7 +218,21 @@ func RenderTile(t GridTile, focused bool, w, h int) string {
 		lines = append(lines, "")
 	}
 	body := lipgloss.NewStyle().Width(w).Render(strings.Join(lines, "\n"))
-	return top + "\n" + style.BorderTop(false).Padding(0, 1).Width(w+2).Render(body)
+	if !focused || t.Ghost {
+		return top + "\n" + style.BorderTop(false).Padding(0, 1).Width(w+2).Render(body)
+	}
+	// The selected tile says so on the bottom right too, next to Claude's own
+	// name tag at the bottom of its screen, where the eye ends up.
+	tag := selectedTag()
+	bottom := edge.Render(border.BottomLeft+strings.Repeat(border.Bottom, max(0, w+1-lipgloss.Width(tag)))) +
+		tag + edge.Render(border.Bottom+border.BottomRight)
+	return top + "\n" + style.BorderTop(false).BorderBottom(false).Padding(0, 1).Width(w+2).Render(body) + "\n" + bottom
+}
+
+// selectedTag is the white "◀ SELECTED" label on the selected tile's top and
+// bottom borders.
+func selectedTag() string {
+	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#ffffff")).Render(" ◀ SELECTED ")
 }
 
 // modelTag draws the session's model as a small tag: sonnet green, opus
