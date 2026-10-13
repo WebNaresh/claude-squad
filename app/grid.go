@@ -282,7 +282,11 @@ func captureTile(j gridJob, w, h int) ui.GridTile {
 		// Evidence for half-empty tiles: what was captured, and why.
 		logEvent("half-empty tile %s: text in %d of %d rows (fit=%v dropped=%d)", name, r, h, j.fit, dropped)
 	}
-	t.Content = cursorInto(name, j.cursorFor, t.Content, dropped)
+	if !tmux.IsScrolled(name) {
+		// Scrolled back, the cursor's row is off the shown lines; drawn anyway
+		// it landed in the middle of old text.
+		t.Content = cursorInto(name, j.cursorFor, t.Content, dropped)
+	}
 	return t
 }
 
