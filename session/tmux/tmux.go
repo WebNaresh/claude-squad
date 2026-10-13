@@ -497,13 +497,57 @@ func (t *TmuxSession) DoesSessionExist() bool {
 // CapturePaneContent captures the content of the tmux pane
 func (t *TmuxSession) CapturePaneContent() (string, error) {
 	// Add -e flag to preserve escape sequences (ANSI color codes)
-	args := append([]string{"capture-pane", "-p", "-e", "-J", "-t", t.sanitizedName}, scrolledRange(t.sanitizedName)...)
+	args := []string{"capture-pane", "-p", "-e", "-J", "-t", t.sanitizedName}
+	r := scrolledRange(t.sanitizedName)
+	height := 0
+	if r != nil {
+		height = atoi(r[3]) - atoi(r[1]) + 1
+		// Scrolled back: -J joins wrapped history lines (written when the
+		// window was wider), so the pane's rows came back as fewer lines and
+		// the tile went blank at the bottom, more the further back it
+		// scrolled (100 lines back: 35 of 54 rows). Capture from further up
+		// and keep the last pane-height lines, ending where the view ends.
+		args = append(args, "-S", strconv.Itoa(atoi(r[1])-2*height), "-E", r[3])
+	}
 	cmd := exec.Command("tmux", args...)
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
 		return "", fmt.Errorf("error capturing pane content: %v", err)
 	}
-	return string(output), nil
+	if r == nil {
+		return string(output), nil
+	}
+	lines := strings.Split(strings.TrimSuffix(string(output), "\n"), "\n")
+	if len(lines) < height && reachedTop(t.sanitizedName, -atoi(r[1])+2*height) {
+		// At the top of the history nothing above fills it: the view starts
+		// at the first line, so read further down instead and keep the top.
+		// (Short elsewhere, one huge wrapped line: left as is, not a jump.)
+		more, err := t.cmdExec.Output(exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-t", t.sanitizedName,
+			"-S", "-", "-E", strconv.Itoa(atoi(r[3])+2*height)))
+		if err == nil {
+			lines = strings.Split(strings.TrimSuffix(string(more), "\n"), "\n")
+			if len(lines) > height {
+				lines = lines[:height]
+			}
+		}
+		return strings.Join(lines, "\n") + "\n", nil
+	}
+	if len(lines) > height {
+		lines = lines[len(lines)-height:]
+	}
+	return strings.Join(lines, "\n") + "\n", nil
+}
+
+// reachedTop reports whether a capture starting `back` rows above the
+// screen began at the first line of the pane's history.
+func reachedTop(target string, back int) bool {
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", target, "#{history_size}").Output()
+	return err == nil && back >= atoi(strings.TrimSpace(string(out)))
+}
+
+func atoi(s string) int {
+	n, _ := strconv.Atoi(s)
+	return n
 }
 
 // scrolledRange returns the capture-pane -S/-E arguments for the lines a
