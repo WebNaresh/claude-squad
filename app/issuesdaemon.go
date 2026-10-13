@@ -118,6 +118,10 @@ func RunIssuesDaemon() error {
 				}
 			}
 			logEvent("daemon: starting #%d in %s", next.issue.Number, filepath.Base(next.project))
+			// Its colour now, so the new tile is drawn in it from the start.
+			if list, _, err := session.ListExternalSessions(); err == nil {
+				colorIssueSessions(list, colored)
+			}
 			job = &next
 			continue
 		}
