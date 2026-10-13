@@ -147,11 +147,29 @@ func flushLogs() {
 func flushLogsForever() {
 	for range time.Tick(500 * time.Millisecond) {
 		logFiles.Lock()
-		for _, l := range logFiles.open {
+		for name, l := range logFiles.open {
 			_ = l.w.Flush()
+			// The window and the background runner write the same log; when
+			// one cuts it back (renames it to .old), the other kept writing to
+			// the renamed file, and later to a deleted one: the runner's
+			// decisions were unreadable for 3 days (13 Oct). Reopen by path.
+			if !samePath(l) {
+				_ = l.f.Close()
+				delete(logFiles.open, name)
+			}
 		}
 		logFiles.Unlock()
 	}
+}
+
+// samePath reports whether l's open file is still the one at its path.
+func samePath(l *bufferedLog) bool {
+	onDisk, err := os.Stat(l.path)
+	if err != nil {
+		return false
+	}
+	open, err := l.f.Stat()
+	return err == nil && os.SameFile(onDisk, open)
 }
 
 // stateName describes where keys go right now, for the activity log.
