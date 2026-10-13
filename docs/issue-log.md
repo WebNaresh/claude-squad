@@ -76,6 +76,11 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Fix:** `openPath` now opens any image on a one-image page, and a folder that holds images (two levels deep, newest first) on a page of them. Only an empty folder or a PDF still uses `open` (`openFilesPage`, `imagesIn` in `app/gallery.go`).
 - **Guard:** `TestImagesIn`.
 
+### PR in the status bar didn't say whether its checks pass
+- **Asked (2026-10-13):** the bottom row showed only "PR #593"; the user had to open the browser to see if CI passed or was still running, and wanted it live.
+- **Fix:** the PR segment now carries the checks: green "✓ 5/5 checks", red "✗ 1 failed", amber "● 2 of 5 running". Read from `gh pr view --json statusCheckRollup`, re-read every 10s for the active project (`checkLabel`, `prRefreshEvery` in `app/statusbar.go`; `PullRequest.CheckSummary` in `session/git/sync.go`). Clicking it still opens the PR. A ↻ button to its right re-reads the PR and checks at once (`refreshPRNow`); it shows ⟳ while loading.
+- **Guard:** `TestCheckLabel`.
+
 ### Which model is each session running? (gai model: labels)
 - **Asked (2026-10-07, via glitchgrab#576):** gai now starts issue sessions with `--model sonnet` / `--model 'opus[1m]'` from the issue's `model:` label; the user wants to see that per session.
 - **Fix:** every Claude tile's header shows a small model tag before its status: sonnet (green), opus (purple), others grey, with `[1m]` when the process was started with `--model …[1m]`. The model comes from the latest reply in the session's transcript ("model":"claude-sonnet-5-5"); before the first reply, from the process's `--model` argument (`session.AgentModel`; the pid is found in `~/.claude/sessions/*.json`).
