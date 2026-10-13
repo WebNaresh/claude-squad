@@ -1,6 +1,7 @@
 package app
 
 import (
+	"claude-squad/session/git"
 	"os"
 	"path/filepath"
 	"testing"
@@ -149,5 +150,16 @@ func TestImagesIn(t *testing.T) {
 	}
 	if got := imagesIn(dir); len(got) != 2 {
 		t.Fatalf("want 2 images, got %v", got)
+	}
+}
+
+func TestCheckLabel(t *testing.T) {
+	ok := git.PullRequest{Checks: []git.CheckItem{{Status: "COMPLETED", Conclusion: "SUCCESS"}, {State: "SUCCESS"}}}
+	if p, f, n := ok.CheckSummary(); p != 2 || f != 0 || n != 0 {
+		t.Fatalf("pass: %d %d %d", p, f, n)
+	}
+	mix := git.PullRequest{Checks: []git.CheckItem{{Status: "COMPLETED", Conclusion: "FAILURE"}, {Status: "IN_PROGRESS"}, {State: "PENDING"}}}
+	if p, f, n := mix.CheckSummary(); p != 0 || f != 1 || n != 2 {
+		t.Fatalf("mix: %d %d %d", p, f, n)
 	}
 }
