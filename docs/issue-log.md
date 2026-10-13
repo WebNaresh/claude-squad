@@ -81,6 +81,12 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Fix:** the PR segment now carries the checks: green "✓ 5/5 checks", red "✗ 1 failed", amber "● 2 of 5 running". Read from `gh pr view --json statusCheckRollup`, re-read every 10s for the active project (`checkLabel`, `prRefreshEvery` in `app/statusbar.go`; `PullRequest.CheckSummary` in `session/git/sync.go`). Clicking it still opens the PR. A ↻ button to its right re-reads the PR and checks at once (`refreshPRNow`); it shows ⟳ while loading.
 - **Guard:** `TestCheckLabel`.
 
+### Behind the remote (↓3) but no way to pull from cs
+- **Saw (2026-10-13):** glitchgrab showed `↓3 ↑0`; clicking it only offered a push ("nothing to push"), so the user couldn't pull.
+- **Fix:** the bar has two buttons: `↓N` pulls (`git pull --ff-only`, after a confirm; shows ⟳ pulling…), `↑N` pushes. A diverged or dirty branch shows git's own refusal (`git.Pull`, `pullProject` in `app/statusbar.go`).
+- **Note:** the counts come from the last fetch; a pull fetches first. A terminal "Already up to date" in another folder does not change the project root's count.
+- **Guard:** none yet (needs a git remote fixture).
+
 ### Which model is each session running? (gai model: labels)
 - **Asked (2026-10-07, via glitchgrab#576):** gai now starts issue sessions with `--model sonnet` / `--model 'opus[1m]'` from the issue's `model:` label; the user wants to see that per session.
 - **Fix:** every Claude tile's header shows a small model tag before its status: sonnet (green), opus (purple), others grey, with `[1m]` when the process was started with `--model …[1m]`. The model comes from the latest reply in the session's transcript ("model":"claude-sonnet-5-5"); before the first reply, from the process's `--model` argument (`session.AgentModel`; the pid is found in `~/.claude/sessions/*.json`).
