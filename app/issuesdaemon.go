@@ -90,7 +90,9 @@ func RunIssuesDaemon() error {
 		if time.Now().After(nextLimitCheck) {
 			nextLimitCheck = time.Now().Add(15 * time.Second)
 			if list, _, err := session.ListExternalSessions(); err == nil {
-				resumeAfterLimit(list, limitDone, time.Now())
+				if at := resumeAfterLimit(list, limitDone, time.Now()); !at.IsZero() && at.Before(nextLimitCheck) {
+					nextLimitCheck = at // a reset is due before the next scan
+				}
 				colorIssueSessions(list, colored)
 			}
 		}
