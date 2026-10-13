@@ -129,6 +129,12 @@ func (p *IssuePicker) tickDefault() {
 	if limit <= 0 {
 		limit = IssuePickDefault
 	}
+	p.tickFirst(limit)
+}
+
+// tickFirst ticks issues in list order, skipping ones with a session or
+// skipped, until limit are ticked.
+func (p *IssuePicker) tickFirst(limit int) {
 	for _, is := range p.issues {
 		if len(p.selected) == limit {
 			break
@@ -185,16 +191,37 @@ func (p *IssuePicker) HandleKey(key string) (done, start bool) {
 		p.scroll += 5
 	case "pgup", "shift+up", "K":
 		p.scroll = max(0, p.scroll-5)
-	case " ", "x":
+	case " ":
+		// Tick or untick only. Unticking used to skip the issue too, so
+		// trimming a list to the 3 you wanted skipped the rest for good.
 		if p.cursor < len(p.issues) {
 			n := p.issues[p.cursor].Number
 			if !p.busy[n] {
-				// Unticking skips the issue: it isn't ticked by default next
-				// time. Ticking it again takes it back.
 				p.selected[n] = !p.selected[n]
-				p.skipped[n] = !p.selected[n]
+				if p.selected[n] {
+					delete(p.skipped, n) // starting it on purpose takes the skip back
+				}
 			}
 		}
+	case "x":
+		// Skip: never ticked by default or offered by auto, but kept in the
+		// list (greyed) so it can be started by hand any time. x again
+		// takes it back.
+		if p.cursor < len(p.issues) {
+			n := p.issues[p.cursor].Number
+			if !p.busy[n] {
+				if p.skipped[n] {
+					delete(p.skipped, n)
+				} else {
+					p.skipped[n] = true
+					delete(p.selected, n)
+				}
+			}
+		}
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		// Start exactly N: tick the first N in list order, nothing else.
+		p.selected = map[int]bool{}
+		p.tickFirst(int(key[0] - '0'))
 	case "enter":
 		return true, len(p.Selected()) > 0
 	case "esc", "q", "ctrl+c":
@@ -222,7 +249,7 @@ func (p *IssuePicker) Render() string {
 		order, other = other, order
 	}
 	b.WriteString(ipTitleStyle.Render("Start Claude on issues") + "   project: " + ipTitleStyle.Render("‹ "+p.Name+" ›") + "   " + ipDimStyle.Render(order) + "\n")
-	b.WriteString(KeyRow("", []Key{{"enter", "start"}, {"esc", "cancel"}, {"space", "tick / skip"}, {"↑↓", "move"},
+	b.WriteString(KeyRow("", []Key{{"enter", "start"}, {"esc", "cancel"}, {"space", "tick"}, {"x", "skip"}, {"1-9", "tick first N"}, {"↑↓", "move"},
 		{"s", other}, {"←→", "project"}, {"o", "open"}, {"a", autoLabel(p.AutoOn)}, {"J/K", "scroll"}}, w-4) + "\n")
 	if p.Auto != "" {
 		b.WriteString(ipTitleStyle.Render("⟳ Auto: ") + p.Auto + "\n")
