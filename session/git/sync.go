@@ -57,12 +57,41 @@ type PullRequest struct {
 	Number int    `json:"number"`
 	URL    string `json:"url"`
 	State  string `json:"state"`
+	// Checks is GitHub's rollup of the PR's CI checks (statusCheckRollup).
+	Checks []CheckItem `json:"statusCheckRollup"`
+}
+
+type CheckItem struct {
+	Status     string `json:"status"`     // CheckRun: QUEUED, IN_PROGRESS, COMPLETED
+	Conclusion string `json:"conclusion"` // CheckRun, once COMPLETED
+	State      string `json:"state"`      // StatusContext: SUCCESS, FAILURE, PENDING, ERROR
+}
+
+// CheckSummary counts the PR's checks: passed, failed, still running.
+func (p PullRequest) CheckSummary() (pass, fail, pending int) {
+	for _, c := range p.Checks {
+		v := c.Conclusion
+		if c.State != "" {
+			v = c.State
+		}
+		switch {
+		case c.Status != "" && c.Status != "COMPLETED":
+			pending++
+		case v == "SUCCESS" || v == "NEUTRAL" || v == "SKIPPED":
+			pass++
+		case v == "" || v == "PENDING" || v == "EXPECTED":
+			pending++
+		default: // FAILURE, ERROR, TIMED_OUT, CANCELLED, ACTION_REQUIRED, …
+			fail++
+		}
+	}
+	return
 }
 
 // CurrentPR asks GitHub (gh) for the current branch's pull request; ok is
 // false when there is none or gh can't tell.
 func CurrentPR(root string) (PullRequest, bool) {
-	cmd := exec.Command("gh", "pr", "view", "--json", "number,url,state")
+	cmd := exec.Command("gh", "pr", "view", "--json", "number,url,state,statusCheckRollup")
 	cmd.Dir = root
 	out, err := cmd.Output()
 	if err != nil {
