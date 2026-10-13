@@ -108,6 +108,21 @@ func prRoom(issues []session.Issue) (room, pr int) {
 	return autoMaxPerPR - count[pr], pr
 }
 
+// joining counts the issues whose session is running but which aren't on a
+// PR yet. gai adds each to the batch PR a minute or so after it starts, so
+// they already take a place: counting only the PR's own list let a second
+// issue start in that gap (practice-stack, 13 Oct: PR #2435 at 14 of 15,
+// #2414 started, #2415 started 53s later, the PR ended at 16).
+func joining(issues []session.Issue, busy map[int]bool) int {
+	n := 0
+	for _, is := range issues {
+		if busy[is.Number] && is.PR == 0 {
+			n++
+		}
+	}
+	return n
+}
+
 // stepAuto runs autoCheck and schedules the next one.
 func (m *home) stepAuto() tea.Cmd {
 	return tea.Batch(m.autoCheck(), autoTick())
@@ -145,7 +160,9 @@ func (m *home) autoCheck() tea.Cmd {
 		if !cached {
 			continue
 		}
+		busy, skipped := m.busyIssues(p), readSkipped(p)
 		room, pr := prRoom(issues)
+		room -= joining(issues, busy)
 		if room <= 0 {
 			if key := fmt.Sprint(pr, "full"); m.autoSaid[p] != key && p == m.projectTabs.Active() {
 				m.autoSaid[p] = key
@@ -154,7 +171,6 @@ func (m *home) autoCheck() tea.Cmd {
 			}
 			continue
 		}
-		busy, skipped := m.busyIssues(p), readSkipped(p)
 		offer := 0
 		for _, is := range issues {
 			if is.PR == 0 && !busy[is.Number] && !skipped[is.Number] {
