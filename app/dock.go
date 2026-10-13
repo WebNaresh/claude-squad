@@ -171,7 +171,9 @@ func (m *home) refreshDock() tea.Cmd {
 		msg := dockCapturedMsg{name: name, command: tmux.CurrentCommand(name)}
 		if !hidden {
 			msg.content, _ = tmux.CaptureScreen(name)
-			msg.content = cursorInto(name, focus, msg.content, 0)
+			if !tmux.IsScrolled(name) { // scrolled back, the cursor's row isn't shown
+				msg.content = cursorInto(name, focus, msg.content, 0)
+			}
 		}
 		return msg
 	}
