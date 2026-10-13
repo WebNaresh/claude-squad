@@ -19,8 +19,9 @@ type statusBar struct {
 	sync    map[string]git.SyncState // per project root, from the Source Control refresh
 	prs     map[string]prEntry
 	pushing map[string]bool
+	pulling map[string]bool
 	// Where the clickable parts were drawn on the bottom row (columns).
-	syncSpan, prSpan, refreshSpan [2]int
+	syncSpan, pullSpan, prSpan, refreshSpan [2]int
 }
 
 type prEntry struct {
@@ -90,21 +91,35 @@ func (m *home) statusRight(start int) string {
 	}
 	parts := []string{barTextStyle.Render("⎇ " + st.branch)}
 	col := start + lipgloss.Width(parts[0]) + 2
-	m.bar.syncSpan, m.bar.prSpan, m.bar.refreshSpan = [2]int{}, [2]int{}, [2]int{}
+	m.bar.syncSpan, m.bar.pullSpan, m.bar.prSpan, m.bar.refreshSpan = [2]int{}, [2]int{}, [2]int{}, [2]int{}
 
-	var sync string
+	// ↓N pulls (click), ↑N pushes (click); two buttons, two click spans.
 	sy := m.bar.sync[root]
 	switch {
 	case m.bar.pushing[root]:
-		sync = barBusyStyle.Render(" ⟳ pushing… ")
+		sync := barBusyStyle.Render(" ⟳ pushing… ")
+		m.bar.syncSpan = [2]int{col, col + lipgloss.Width(sync)}
+		parts = append(parts, sync)
+		col += lipgloss.Width(sync) + 2
+	case m.bar.pulling[root]:
+		sync := barBusyStyle.Render(" ⟳ pulling… ")
+		m.bar.pullSpan = [2]int{col, col + lipgloss.Width(sync)}
+		parts = append(parts, sync)
+		col += lipgloss.Width(sync) + 2
 	case sy.Upstream == "":
-		sync = barSyncStyle.Render(" ⇡ publish branch ")
+		sync := barSyncStyle.Render(" ⇡ publish branch ")
+		m.bar.syncSpan = [2]int{col, col + lipgloss.Width(sync)}
+		parts = append(parts, sync)
+		col += lipgloss.Width(sync) + 2
 	default:
-		sync = barSyncStyle.Render(fmt.Sprintf(" ↓%d ↑%d ", sy.Behind, sy.Ahead))
+		pull := barSyncStyle.Render(fmt.Sprintf(" ↓%d ", sy.Behind))
+		push := barSyncStyle.Render(fmt.Sprintf(" ↑%d ", sy.Ahead))
+		m.bar.pullSpan = [2]int{col, col + lipgloss.Width(pull)}
+		col += lipgloss.Width(pull) + 1
+		m.bar.syncSpan = [2]int{col, col + lipgloss.Width(push)}
+		col += lipgloss.Width(push) + 2
+		parts = append(parts, pull+barStyle.Render(" ")+push)
 	}
-	m.bar.syncSpan = [2]int{col, col + lipgloss.Width(sync)}
-	parts = append(parts, sync)
-	col += lipgloss.Width(sync) + 2
 
 	if e := m.bar.prs[root]; e.ok && e.branch == st.branch {
 		label := fmt.Sprintf("PR #%d", e.pr.Number)
@@ -157,6 +172,55 @@ func (m *home) statusRow(width int) string {
 	msg := m.errBox.Text(max(0, width-lw-4), barBG)
 	gap := max(1, width-lw-lipgloss.Width(msg)-1)
 	return left + barStyle.Render(strings.Repeat(" ", gap)) + msg + barStyle.Render(" ")
+}
+
+// pullProject asks, then fast-forwards the active project's branch.
+func (m *home) pullProject() tea.Cmd {
+	root := m.projectTabs.Active()
+	st := m.scCache[root]
+	sy := m.bar.sync[root]
+	if m.bar.pulling[root] || st.branch == "" {
+		return nil
+	}
+	if sy.Upstream == "" {
+		return m.handleError(fmt.Errorf("%s has no upstream to pull from: publish it first", st.branch))
+	}
+	if sy.Behind == 0 {
+		// The count comes from the last fetch: a pull fetches first, so
+		// "up to date" here still means one real check against GitHub.
+		return m.confirmAction(fmt.Sprintf("Fetch and pull %s from %s?", st.branch, sy.Upstream), func() tea.Msg {
+			return pullStartMsg{root: root}
+		})
+	}
+	return m.confirmAction(fmt.Sprintf("Pull %d commit(s) into %s from %s?", sy.Behind, st.branch, sy.Upstream), func() tea.Msg {
+		return pullStartMsg{root: root}
+	})
+}
+
+type pullStartMsg struct{ root string }
+
+type pullDoneMsg struct {
+	root string
+	err  error
+}
+
+func (m *home) startPull(root string) tea.Cmd {
+	if m.bar.pulling == nil {
+		m.bar.pulling = map[string]bool{}
+	}
+	m.bar.pulling[root] = true
+	logEvent("pull started: %s", root)
+	return func() tea.Msg { return pullDoneMsg{root: root, err: git.Pull(root)} }
+}
+
+func (m *home) pullDone(msg pullDoneMsg) tea.Cmd {
+	delete(m.bar.pulling, msg.root)
+	if msg.err != nil {
+		logEvent("pull failed: %v", msg.err)
+		return tea.Batch(m.handleError(msg.err), m.refreshSourceControl())
+	}
+	logEvent("pulled: %s", msg.root)
+	return tea.Batch(m.handleError(fmt.Errorf("pulled: branch is up to date")), m.refreshSourceControl())
 }
 
 // pushProject asks, then pushes the active project's branch.
@@ -246,6 +310,8 @@ func (m *home) clickBottomRow(x int) (tea.Cmd, bool) {
 	switch {
 	case x >= m.bar.syncSpan[0] && x < m.bar.syncSpan[1]:
 		return m.pushProject(), true
+	case m.bar.pullSpan[1] > m.bar.pullSpan[0] && x >= m.bar.pullSpan[0] && x < m.bar.pullSpan[1]:
+		return m.pullProject(), true
 	case x >= m.bar.refreshSpan[0] && x < m.bar.refreshSpan[1]:
 		return m.refreshPRNow(), true
 	case x >= m.bar.prSpan[0] && x < m.bar.prSpan[1]:
