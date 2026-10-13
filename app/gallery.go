@@ -3,6 +3,7 @@ package app
 import (
 	"claude-squad/config"
 	"claude-squad/session"
+	"crypto/sha1"
 	"fmt"
 	"html"
 	"net/url"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -60,6 +62,77 @@ func openGallery(e *session.ExternalSession, focus string) tea.Cmd {
 		logEvent("gallery opened for %s: %d file(s)", e.Name, n)
 		return fmt.Errorf("opened %d image(s) in the browser", n)
 	}
+}
+
+// openFilesPage shows loose files (a clicked image Claude never "sent", or
+// the images in a clicked folder) on the same page style, in the browser
+// instead of Finder/Preview. name keeps one page per target.
+func openFilesPage(target string, files []string, focus string) tea.Cmd {
+	name := filepath.Base(target)
+	return func() tea.Msg {
+		dir, err := config.GetConfigDir()
+		if err != nil {
+			return err
+		}
+		dir = filepath.Join(dir, "gallery")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		page := filepath.Join(dir, fmt.Sprintf("files-%x-%s.html", sha1.Sum([]byte(target)), galleryNameRe.ReplaceAllString(name, "-")))
+		batch := []session.SentBatch{{Files: files}}
+		if err := os.WriteFile(page, []byte(galleryHTML(name, batch, focus)), 0o644); err != nil {
+			return err
+		}
+		if exec.Command("open", "-a", "Google Chrome", "--", page).Run() != nil {
+			if out, err := exec.Command("open", "--", page).CombinedOutput(); err != nil {
+				return fmt.Errorf("could not open the image page: %s", strings.TrimSpace(string(out)))
+			}
+		}
+		logEvent("image page opened for %s: %d file(s)", name, len(files))
+		return fmt.Errorf("opened %d image(s) in the browser", len(files))
+	}
+}
+
+// maxFolderImages keeps a clicked project folder from becoming a huge page.
+const maxFolderImages = 200
+
+// imagesIn lists the images under dir, two folder levels deep, newest first.
+func imagesIn(dir string) []string {
+	type f struct {
+		p string
+		t int64
+	}
+	var found []f
+	base := strings.Count(dir, string(filepath.Separator))
+	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if len(found) >= maxFolderImages {
+			return filepath.SkipAll
+		}
+		if d.IsDir() {
+			if n := d.Name(); p != dir && (strings.HasPrefix(n, ".") || n == "node_modules") {
+				return filepath.SkipDir
+			}
+			if strings.Count(p, string(filepath.Separator))-base > 2 {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if imageExts[strings.ToLower(filepath.Ext(p))] {
+			if info, err := d.Info(); err == nil {
+				found = append(found, f{p, info.ModTime().UnixNano()})
+			}
+		}
+		return nil
+	})
+	sort.Slice(found, func(i, j int) bool { return found[i].t > found[j].t })
+	out := make([]string, len(found))
+	for i, x := range found {
+		out[i] = x.p
+	}
+	return out
 }
 
 func galleryHTML(title string, batches []session.SentBatch, focus string) string {
