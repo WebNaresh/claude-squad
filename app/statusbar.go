@@ -20,7 +20,7 @@ type statusBar struct {
 	prs     map[string]prEntry
 	pushing map[string]bool
 	// Where the clickable parts were drawn on the bottom row (columns).
-	syncSpan, prSpan [2]int
+	syncSpan, prSpan, refreshSpan [2]int
 }
 
 type prEntry struct {
@@ -54,14 +54,18 @@ var (
 	barPRStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#4fc1ff")).Background(barBG).Underline(true)
 )
 
+// prRefreshEvery is how often the PR and its checks are re-read: short, so a
+// check turning red or green shows without opening the browser.
+const prRefreshEvery = 10 * time.Second
+
 // refreshPR looks up the branch's pull request in the background, at most
-// once a minute per project and again when the branch changes.
+// every prRefreshEvery per project and again when the branch changes.
 func (m *home) refreshPR(root, branch string) tea.Cmd {
 	if m.bar.prs == nil {
 		m.bar.prs = map[string]prEntry{}
 	}
 	e := m.bar.prs[root]
-	if e.loading || (e.branch == branch && time.Since(e.fetched) < time.Minute) || branch == "" {
+	if e.loading || (e.branch == branch && time.Since(e.fetched) < prRefreshEvery) || branch == "" {
 		return nil
 	}
 	e.loading = true
@@ -86,7 +90,7 @@ func (m *home) statusRight(start int) string {
 	}
 	parts := []string{barTextStyle.Render("⎇ " + st.branch)}
 	col := start + lipgloss.Width(parts[0]) + 2
-	m.bar.syncSpan, m.bar.prSpan = [2]int{}, [2]int{}
+	m.bar.syncSpan, m.bar.prSpan, m.bar.refreshSpan = [2]int{}, [2]int{}, [2]int{}
 
 	var sync string
 	sy := m.bar.sync[root]
@@ -108,10 +112,41 @@ func (m *home) statusRight(start int) string {
 			label += " · " + strings.ToLower(e.pr.State)
 		}
 		pr := barPRStyle.Render(label)
+		if ck := checkLabel(e.pr); ck != "" && (e.pr.State == "" || e.pr.State == "OPEN") { // a merged PR's old checks say nothing
+			pr += barStyle.Render(" ") + ck
+		}
 		m.bar.prSpan = [2]int{col, col + lipgloss.Width(pr)}
-		parts = append(parts, pr)
+		icon, istyle := " ↻ ", barSyncStyle
+		if e.loading {
+			icon, istyle = " ⟳ ", barBusyStyle
+		}
+		ric := istyle.Render(icon)
+		start := m.bar.prSpan[1] + 2
+		m.bar.refreshSpan = [2]int{start, start + lipgloss.Width(ric)}
+		parts = append(parts, pr, ric)
 	}
 	return strings.Join(parts, barStyle.Render("  "))
+}
+
+// checkLabel is the PR's CI result for the status bar: "✓ 5/5 checks",
+// "✗ 1 failed", "● 2 of 5 running"; "" when the PR has no checks.
+func checkLabel(pr git.PullRequest) string {
+	pass, fail, pending := pr.CheckSummary()
+	total := pass + fail + pending
+	green, red, amber := lipgloss.Color("#3fb950"), lipgloss.Color("#f85149"), lipgloss.Color("#d29922")
+	style := func(c lipgloss.Color) lipgloss.Style {
+		return lipgloss.NewStyle().Foreground(c).Background(barBG).Bold(true)
+	}
+	switch {
+	case total == 0:
+		return ""
+	case fail > 0:
+		return style(red).Render(fmt.Sprintf("✗ %d failed", fail))
+	case pending > 0:
+		return style(amber).Render(fmt.Sprintf("● %d of %d running", pending, total))
+	default:
+		return style(green).Render(fmt.Sprintf("✓ %d/%d checks", pass, total))
+	}
 }
 
 // statusRow is the last row: git status on the left, the latest message on
@@ -178,6 +213,18 @@ func (m *home) pushDone(msg pushDoneMsg) tea.Cmd {
 	return tea.Batch(m.handleError(fmt.Errorf("pushed %d commit(s)", msg.ahead)), m.refreshSourceControl())
 }
 
+// refreshPRNow re-reads the PR and its checks right away (the ↻ button).
+func (m *home) refreshPRNow() tea.Cmd {
+	root := m.projectTabs.Active()
+	st := m.scCache[root]
+	if e, ok := m.bar.prs[root]; ok {
+		e.fetched, e.loading = time.Time{}, false
+		m.bar.prs[root] = e
+	}
+	logEvent("PR refresh clicked: %s", root)
+	return tea.Batch(m.refreshPR(root, st.branch), m.handleError(fmt.Errorf("refreshing the PR and its checks…")))
+}
+
 // openPR opens the active project's pull request in the browser.
 func (m *home) openPR() tea.Cmd {
 	e := m.bar.prs[m.projectTabs.Active()]
@@ -199,6 +246,8 @@ func (m *home) clickBottomRow(x int) (tea.Cmd, bool) {
 	switch {
 	case x >= m.bar.syncSpan[0] && x < m.bar.syncSpan[1]:
 		return m.pushProject(), true
+	case x >= m.bar.refreshSpan[0] && x < m.bar.refreshSpan[1]:
+		return m.refreshPRNow(), true
 	case x >= m.bar.prSpan[0] && x < m.bar.prSpan[1]:
 		return m.openPR(), true
 	}
