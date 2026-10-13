@@ -52,6 +52,17 @@ func Push(root string) error {
 	return nil
 }
 
+// Pull fast-forwards the current branch from its upstream (fetches first).
+// A diverged or dirty branch is refused by git and its message returned.
+func Pull(root string) error {
+	out, err := exec.Command("git", "-C", root, "pull", "--ff-only").CombinedOutput()
+	if err != nil {
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		return fmt.Errorf("pull failed: %s", lines[len(lines)-1])
+	}
+	return nil
+}
+
 // PullRequest is the open pull request of the current branch.
 type PullRequest struct {
 	Number int    `json:"number"`
