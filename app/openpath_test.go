@@ -135,3 +135,19 @@ func TestCutImageAt(t *testing.T) {
 		t.Errorf("plain text row = %q, want none", got)
 	}
 }
+
+func TestImagesIn(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "shots")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{filepath.Join(dir, "a.png"), filepath.Join(sub, "b.jpg"), filepath.Join(dir, "notes.md")} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := imagesIn(dir); len(got) != 2 {
+		t.Fatalf("want 2 images, got %v", got)
+	}
+}
