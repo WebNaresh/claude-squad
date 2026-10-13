@@ -196,6 +196,12 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Fix:** `reapLeftoverChildren` in `main.go` collects finished children at startup, before this run starts any of its own.
 - **Guard:** `ps -Ao ppid,stat | awk '$2 ~ /Z/'` under cs's pid should be near 0 after a self-update.
 
+### A closed project tab came straight back (abhyasika_turbo_repo, 2026-10-13)
+- **Saw:** Ctrl+Space x, Enter on the confirm: the tab stayed ("abhyasika_turbo_repo · 6 free"). It had appeared on its own: a Claude session started in a GitHub runner checkout (`~/github-runners/runner-1/_work/abhyasika_turbo_repo/…`) opened a temporary tab.
+- **Cause:** the close worked (`config.json` lost it), but the tab's docked terminal `csterm_abhyasika_turbo_repo` kept running, and every live session's folder gets a tab, a plain shell included.
+- **Fix:** a docked terminal with no Claude in it no longer holds a tab open (`setExternalSessions`), and closing a tab also closes its docked terminal when it sits at the prompt (`termIdle`). Files: `app/app.go`, `app/terminal.go`.
+- **Check:** usage.log "ui tabs=" drops by one after the close.
+
 ## Test incidents (rules for live tests)
 
 - A test pressed Enter on the user's real session and moved it. → Check the selected row on screen before any destructive key (CLAUDE.md "Live tests").
