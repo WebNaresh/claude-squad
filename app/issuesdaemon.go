@@ -187,6 +187,7 @@ func RunIssuesDaemon() error {
 					pr, room = n, autoMaxPerPR
 				}
 			}
+			room -= joining(issues[p], busy)
 			if room <= 0 {
 				if key := fmt.Sprint(pr, "full"); said[p] != key {
 					said[p] = key
