@@ -1507,6 +1507,12 @@ func (m *home) setExternalSessions(sessions []*session.ExternalSession) {
 		if root != "" {
 			// Match tabs by the repo's real path (/tmp vs /private/tmp, symlinks).
 			e.Path = root
+			// A plain shell (a project's docked terminal, no Claude in it)
+			// doesn't hold a tab open: closing abhyasika_turbo_repo's tab
+			// left its terminal running, and that put the tab straight back.
+			if strings.HasPrefix(e.Name, session.TermPrefix) && e.Status == "" {
+				continue
+			}
 			if !containsString(roots, root) {
 				roots = append(roots, root)
 			}
@@ -1722,6 +1728,13 @@ func (m *home) closeActiveProject() tea.Cmd {
 	closeAction := func() tea.Msg {
 		if err := m.appConfig.CloseProject(project); err != nil {
 			log.WarningLog.Printf("failed to save open projects: %v", err)
+		}
+		// Its docked terminal goes with it when nothing runs there.
+		for _, e := range m.list.ExternalSessions() {
+			if strings.HasPrefix(e.Name, session.TermPrefix) && e.Status == "" && m.projectOf(e.Path) == project && termIdle(e.Name) {
+				_ = exec.Command("tmux", "kill-session", "-t", "="+e.Name).Run()
+				logEvent("closed %s with its tab", e.Name)
+			}
 		}
 		m.refreshTabs(m.appConfig.ActiveProject)
 		if cmd := m.switchProject(m.projectTabs.Active()); cmd != nil {
