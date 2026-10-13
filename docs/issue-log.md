@@ -102,12 +102,15 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Saw:** the wheel typed old prompts; `claude attach` tiles didn't scroll; slow wheel notches leaked as arrow keys.
 - **Fix:** burst detection (10ms gap, 300ms sticky window); SGR wheel events to alternate-screen panes, tmux copy-mode otherwise (`app/livepane.go`).
 - **Guard:** `app/livepane_test.go`; keys.log shows "wheel scroll …".
+- **Came back (2026-10-13): a scrolled tile went blank at the bottom, more the further back.** Back at the live bottom it was fine. The scrolled capture took exactly the pane's rows with `-J`, which joins history lines wrapped when the window was wider, so 54 rows came back as 35 lines (100 back) or 28 (1000 back). Now it captures from two screens higher and keeps the last pane-height lines (`CapturePaneContent`, `session/tmux/tmux.go`). The cursor block also showed in the middle of old text while scrolled; it is no longer drawn then (`app/grid.go`).
+- **Guard:** `TestScrolledCaptureFillsTile` (live, private tmux server; old code: 8 of 20 rows).
 
 ### Not sure which tile is selected; focus jumps away before ⌃Space W
 - **Saw (2026-10-05):** to close the tile in row 1, column 3 the user clicked it three times, because selection kept moving and the selected tile was hard to spot.
 - **Cause:** auto-jump to a new question only waited for 3s without a *key*; clicks didn't count. activity.log 08:15:52: click on #2268, auto-jump to #2270 89ms later; 08:13:42 the same with #2265 → #2264. The selected tile differed only by a white frame, and long names cut off the issue number.
 - **Fix:** a click counts as input. A tile picked by hand (click or arrow) holds focus for 30s (`pickHold`); a question meanwhile shows "❓ X needs you · press ! to jump there" instead of moving. When it does jump, it says "❓ moved to X". The selected tile has a white "▶" name tag and "◀ SELECTED" on its top border. Cut names keep their "#NNNN". The close question names the position: "Close X (row 1, column 3)?" (`app/grid.go`, `app/mouseclick.go`, `app/terminal.go`, `ui/grid.go`).
 - **Guard:** activity.log "question …: no auto-jump, tile picked Ns ago"; `TestCutKeepingIssue` (`ui/grid_test.go`).
+- **Follow-up (2026-10-13):** the label only sat on the top border, but the eye ends at the bottom right, next to Claude's own name tag above the prompt. The selected tile now carries "◀ SELECTED" on the right of its bottom border too, same size tile (`ui/grid.go` `selectedTag`; guard `TestSelectedTileBottomLabel`).
 
 ### Closing a session took /exit then exit
 - **Fix:** ⌃Space W closes the selected session or terminal after a y/n question; background sessions via `claude stop` (`app/terminal.go`).
@@ -180,6 +183,7 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Cause:** the runner only resumed a limit after its reset time, and nothing turned Remote Control back on.
 - **Fix:** when that notice is the last step on a tile with an empty prompt, the runner types `/remote-control`. If the tile was stopped on a limit, it also types `continue` straight away, because the new account has its own limit. It does this once per tile per account (`accountUuid/organizationUuid` from `~/.claude.json`). It also counts "⏺" as a step, not only "●" (`app/limitresume.go`).
 - **Came back (same day): `/stage` couldn't upload screenshots.** The claude.ai connectors (Glitchgrab) stayed signed in to the old account, so #2307 asked how to attach its shots. `/reload-plugins` reconnects them; the runner now types it right after `/remote-control`.
+- **Came back (2026-10-13): "it continues, but a little late".** Limit "resets 6pm": continue typed at 18:00:42. A 30s safety margin plus the 15s scan made it up to 45s late. Now 5s after the reset: the runner looks again right at the reset time instead of the next scan. A continue sent before the server's reset (Claude still showing the same limit) is sent once more 90s after the reset; before, it was never retried (`limitMargin`, `limitRetryAfter`, `app/limitresume.go`; `app/issuesdaemon.go`). Guard: `TestResumeAfterLimitTiming` (live, private tmux server).
 - **Guard:** `TestAccountSwitch`; activity.log "claude.ai account changed, typed /remote-control and /reload-plugins" and "usage limit on the old account, typed continue". First live run: 10 tiles, 3 resumed from a limit.
 
 ### Issues that failed testing never came back to the auto pickup
