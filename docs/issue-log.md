@@ -202,6 +202,16 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Fix:** a docked terminal with no Claude in it no longer holds a tab open (`setExternalSessions`), and closing a tab also closes its docked terminal when it sits at the prompt (`termIdle`). Files: `app/app.go`, `app/terminal.go`.
 - **Check:** usage.log "ui tabs=" drops by one after the close.
 
+### A full batch PR got one issue too many (PR #2435 at 16 of 15, 2026-10-13)
+- **Saw:** the header said 15/15, yet #2415 started. The user: "already 15 issues there, why did it start a new session?"
+- **Cause:** room was counted only from the issues already linked on the PR. #2414 started at 14/15; 53s later its gai was still rewriting the PR body, so #2414 wasn't on the PR yet, the room was still 1 and #2415 started too.
+- **Fix:** issues whose session is running but which aren't on a PR yet count as taking a place (`joining`, used by the background runner and the window's picker). Test: `TestJoiningTakesPRRoom`.
+- **Also found:** the runner's activity.log lines were unreadable since 10 Oct. The window and the runner share the log; when one cut it back (renamed to `.old`), the other kept writing to the renamed file, then to a deleted one. Each process now reopens the log by path when the file there is a different one (`samePath`, checked every 500ms).
+
+### Unticking in the issue picker skipped the issue for good (2026-10-13)
+- **Saw:** the user wanted 3 or 4 of the ticked issues; unticking the rest with space marked each "(skipped)", so auto never offered them again and they looked gone. They asked for skip to be its own key, and for a quick way to start exactly 1, 2 or 6.
+- **Fix:** space only ticks/unticks (ticking a skipped issue takes the skip back). `x` skips or un-skips; a skipped issue stays in the list, greyed, and can be ticked any time. Digits 1-9 tick the first N startable issues in list order (no session, not skipped) and untick the rest. File: `ui/issuepicker.go`. Test: `TestPickerTickSkipAndCount`.
+
 ## Test incidents (rules for live tests)
 
 - A test pressed Enter on the user's real session and moved it. → Check the selected row on screen before any destructive key (CLAUDE.md "Live tests").
