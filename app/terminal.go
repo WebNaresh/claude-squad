@@ -142,3 +142,17 @@ func keyboardCheck() tea.Cmd {
 		return keyboardCheckMsg{repaired: session.RepairClaudeKeyboards()}
 	}
 }
+
+// termIdle reports whether a terminal tmux session sits at its shell prompt
+// (nothing typed in it is running), so closing it loses nothing.
+func termIdle(name string) bool {
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", "="+name+":", "#{pane_current_command}").Output()
+	if err != nil {
+		return false
+	}
+	switch strings.TrimSpace(string(out)) {
+	case "zsh", "bash", "sh", "fish", "-zsh", "-bash":
+		return true
+	}
+	return false
+}
