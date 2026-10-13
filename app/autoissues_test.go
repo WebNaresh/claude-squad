@@ -122,3 +122,20 @@ func TestMergedPRIssuesAreTaken(t *testing.T) {
 		t.Fatalf("want an offer of just #960, got picker=%v", m.issuePicker != nil)
 	}
 }
+
+// An issue whose session started but isn't on the PR yet takes a place: with
+// 14 of 15 on the PR and one starting, nothing more starts.
+func TestJoiningTakesPRRoom(t *testing.T) {
+	var issues []session.Issue
+	for n := 1; n <= 14; n++ {
+		issues = append(issues, session.Issue{Number: n, PR: 2435})
+	}
+	issues = append(issues, session.Issue{Number: 2414}, session.Issue{Number: 2415})
+	room, pr := prRoom(issues)
+	if pr != 2435 || room != 1 {
+		t.Fatalf("prRoom = %d, #%d; want 1, #2435", room, pr)
+	}
+	if room -= joining(issues, map[int]bool{2414: true}); room != 0 {
+		t.Fatalf("room with #2414 starting = %d, want 0", room)
+	}
+}
