@@ -24,6 +24,21 @@ func TestLimitReset(t *testing.T) {
 	if limitIsLast(screen + "● Bash(go test)\n❯ \n") {
 		t.Error("resumed already (a new step), but limit seen as last")
 	}
+	// continue sent and Claude still thinking (no step yet): not stopped.
+	limitLines := "● Bash(...)\n  ⎿  You've hit your session limit · resets 12:20pm (Asia/Calcutta)\n     /upgrade to increase your usage limit.\n\n"
+	thinking := limitLines + "❯ continue\n\n✶ Razzmatazzing… (95s)\n─────\n❯ \n─────\n"
+	if limitIsLast(thinking) {
+		t.Error("continue taken and Claude thinking, but limit seen as last")
+	}
+	// continue refused: a new limit line below the sent message.
+	refused := limitLines + "❯ continue\n  ⎿  You've hit your session limit · resets 12:20pm (Asia/Calcutta)\n     /upgrade to increase your usage limit.\n\n─────\n❯ \n─────\n"
+	if !limitIsLast(refused) {
+		t.Error("continue refused, but not seen as stopped")
+	}
+	// A greyed suggestion in the input box isn't a sent message.
+	if !limitIsLast(limitLines + "─────\n❯ commit\n─────\n") {
+		t.Error("suggestion in the input box taken for a sent message")
+	}
 	// The same words quoted in a reply or a test are not a stop.
 	quoted := "● Done. It reads \"You've hit your session limit · resets 1am\" and resumes.\n\n❯ \n"
 	if _, _, ok := limitReset(quoted, now); ok || limitIsLast(quoted) {
