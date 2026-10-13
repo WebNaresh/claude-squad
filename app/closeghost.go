@@ -76,7 +76,12 @@ func (m *home) claudeColorOf(key string) lipgloss.Color {
 	}
 	for _, e := range m.list.ExternalSessions() {
 		if e.Name == name {
-			return claudeColorHex(session.AgentColor(e.SessionID))
+			if c := session.AgentColor(e.SessionID); c != "" {
+				return claudeColorHex(c)
+			}
+			// Not coloured in Claude yet: the colour the runner picked for
+			// it at start, so the tile never shows a different one first.
+			return claudeColorHex(pickedTileColor(name))
 		}
 	}
 	return ""
