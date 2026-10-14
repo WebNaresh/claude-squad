@@ -36,6 +36,7 @@ type ProjectTabs struct {
 	counts   map[string]int
 	needs    map[string]int
 	free     map[string]int // auto issue loop: free session slots to fill
+	checks   map[string]TabChecks
 	width    int
 	// spans holds each tab's [start, end) column from the last render, and
 	// addStart the column where the "+ add project" button begins.
@@ -44,7 +45,7 @@ type ProjectTabs struct {
 }
 
 func NewProjectTabs() *ProjectTabs {
-	return &ProjectTabs{counts: map[string]int{}, needs: map[string]int{}, free: map[string]int{}}
+	return &ProjectTabs{counts: map[string]int{}, needs: map[string]int{}, free: map[string]int{}, checks: map[string]TabChecks{}}
 }
 
 func (t *ProjectTabs) SetWidth(width int) { t.width = width }
@@ -62,6 +63,22 @@ func (t *ProjectTabs) SetProjects(projects []string, active string) {
 
 // SetNeeds sets how many sessions in a project wait on the user.
 func (t *ProjectTabs) SetNeeds(project string, n int) { t.needs[project] = n }
+
+// TabChecks is a project's PR check status, drawn at the end of its tab:
+// Text is "✓ 5/5", "● 2 running" or "✗ 1 failed"; Color its foreground.
+type TabChecks struct {
+	Text  string
+	Color string
+}
+
+// SetChecks sets the checks chip of a project's tab ("" hides it).
+func (t *ProjectTabs) SetChecks(project string, c TabChecks) {
+	if c.Text == "" {
+		delete(t.checks, project)
+		return
+	}
+	t.checks[project] = c
+}
 
 // SetFree sets how many issues the auto loop could start in a project now
 // (shown as "·2 free"; 0 hides it).
@@ -146,11 +163,19 @@ func (t *ProjectTabs) String() string {
 		if n := t.free[p]; n > 0 {
 			label += fmt.Sprintf(" ·%d free", n)
 		}
+		base := projectTabStyle
 		if i == t.active {
-			labels[i] = projectTabActiveStyle.Render(label)
-		} else {
-			labels[i] = projectTabStyle.Render(label)
+			base = projectTabActiveStyle
 		}
+		c, hasChecks := t.checks[p]
+		if !hasChecks {
+			labels[i] = base.Render(label)
+			continue
+		}
+		// The chip keeps the tab's background, so the active tab stays one block.
+		plain := base.UnsetPadding()
+		labels[i] = plain.Render(" "+label) +
+			plain.Foreground(lipgloss.Color(c.Color)).Bold(true).Render(" "+c.Text) + plain.Render(" ")
 	}
 
 	// Keep the active tab on screen when the row is too wide by dropping tabs
