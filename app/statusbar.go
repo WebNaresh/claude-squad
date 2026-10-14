@@ -3,6 +3,7 @@ package app
 import (
 	"claude-squad/session"
 	"claude-squad/session/git"
+	"claude-squad/ui"
 	"fmt"
 	"strings"
 	"time"
@@ -16,10 +17,13 @@ import (
 // (click to open it in the browser); on the right cs's latest message.
 
 type statusBar struct {
-	sync    map[string]git.SyncState // per project root, from the Source Control refresh
-	prs     map[string]prEntry
-	pushing map[string]bool
-	pulling map[string]bool
+	sync map[string]git.SyncState // per project root, from the Source Control refresh
+	prs  map[string]prEntry
+	// stripPRs: the checks of the PR the progress strip shows (the batch PR
+	// issues gather on), which is not always the checked-out branch's PR.
+	stripPRs map[string]prEntry
+	pushing  map[string]bool
+	pulling  map[string]bool
 	// Where the clickable parts were drawn on the bottom row (columns).
 	syncSpan, pullSpan, prSpan, refreshSpan [2]int
 }
@@ -146,22 +150,78 @@ func (m *home) statusRight(start int) string {
 // checkLabel is the PR's CI result for the status bar: "✓ 5/5 checks",
 // "✗ 1 failed", "● 2 of 5 running"; "" when the PR has no checks.
 func checkLabel(pr git.PullRequest) string {
+	text, c := checkText(pr)
+	if text == "" {
+		return ""
+	}
+	return lipgloss.NewStyle().Foreground(c).Background(barBG).Bold(true).Render(text)
+}
+
+// checkText is the check summary and its colour; "" when there are no checks.
+func checkText(pr git.PullRequest) (string, lipgloss.Color) {
 	pass, fail, pending := pr.CheckSummary()
 	total := pass + fail + pending
 	green, red, amber := lipgloss.Color("#3fb950"), lipgloss.Color("#f85149"), lipgloss.Color("#d29922")
-	style := func(c lipgloss.Color) lipgloss.Style {
-		return lipgloss.NewStyle().Foreground(c).Background(barBG).Bold(true)
-	}
 	switch {
 	case total == 0:
-		return ""
+		return "", green
 	case fail > 0:
-		return style(red).Render(fmt.Sprintf("✗ %d failed", fail))
+		return fmt.Sprintf("✗ %d failed", fail), red
 	case pending > 0:
-		return style(amber).Render(fmt.Sprintf("● %d of %d running", pending, total))
+		return fmt.Sprintf("● %d of %d running", pending, total), amber
 	default:
-		return style(green).Render(fmt.Sprintf("✓ %d/%d checks", pass, total))
+		return fmt.Sprintf("✓ %d/%d checks", pass, total), green
 	}
+}
+
+// stripPR is the open PR's checks for the progress strip: the status bar's
+// own read when it is the same PR, else a read of its own, kept fresh by
+// refreshStripPR.
+func (m *home) stripPR(root string, number int) (git.PullRequest, bool) {
+	if e, ok := m.bar.prs[root]; ok && e.ok && e.pr.Number == number && (e.pr.State == "" || e.pr.State == "OPEN") {
+		return e.pr, true
+	}
+	if e, ok := m.bar.stripPRs[root]; ok && e.ok && e.pr.Number == number {
+		return e.pr, true
+	}
+	return git.PullRequest{}, false
+}
+
+type stripPRMsg struct {
+	root string
+	pr   git.PullRequest
+	ok   bool
+	num  int
+}
+
+// refreshStripPR reads the checks of the PR the strip shows, at most every
+// prRefreshEvery per project, so a red or green check shows at the top too.
+func (m *home) refreshStripPR(root string) tea.Cmd {
+	issues, ok := m.issueCache[root]
+	if !ok {
+		return nil
+	}
+	_, number := prRoom(issues)
+	if number == 0 {
+		return nil
+	}
+	if m.bar.stripPRs == nil {
+		m.bar.stripPRs = map[string]prEntry{}
+	}
+	e := m.bar.stripPRs[root]
+	if e.loading || (e.pr.Number == number && time.Since(e.fetched) < prRefreshEvery) {
+		return nil
+	}
+	e.loading = true
+	m.bar.stripPRs[root] = e
+	return func() tea.Msg {
+		pr, ok := git.PRByNumber(root, number)
+		return stripPRMsg{root: root, pr: pr, ok: ok, num: number}
+	}
+}
+
+func (m *home) applyStripPR(msg stripPRMsg) {
+	m.bar.stripPRs[msg.root] = prEntry{pr: msg.pr, ok: msg.ok, fetched: time.Now()}
 }
 
 // statusRow is the last row: git status on the left, the latest message on
@@ -318,4 +378,69 @@ func (m *home) clickBottomRow(x int) (tea.Cmd, bool) {
 		return m.openPR(), true
 	}
 	return nil, false
+}
+
+// tabChecksText is the short checks chip for a project tab: "✓ 5/5",
+// "● 2 running", "✗ 1 failed"; "" without checks.
+func tabChecksText(pr git.PullRequest) (string, lipgloss.Color) {
+	pass, fail, pending := pr.CheckSummary()
+	green, red, amber := lipgloss.Color("#3fb950"), lipgloss.Color("#f85149"), lipgloss.Color("#d29922")
+	switch total := pass + fail + pending; {
+	case total == 0:
+		return "", green
+	case fail > 0:
+		return fmt.Sprintf("✗ %d failed", fail), red
+	case pending > 0:
+		return fmt.Sprintf("● %d running", pending), amber
+	default:
+		return fmt.Sprintf("✓ %d/%d", pass, total), green
+	}
+}
+
+type tabChecksMsg struct {
+	root string
+	pr   git.PullRequest
+	ok   bool
+}
+
+// tabChecksEvery is how often each project's checks are read: one gh call
+// per project, so slower than the active project's own 10s.
+const tabChecksEvery = 30 * time.Second
+
+// refreshTabChecks reads, for every project tab, the checks of the PR it
+// works on: its batch PR when issues have gathered on one, else the PR of
+// its checked-out branch. Each project at most every tabChecksEvery.
+func (m *home) refreshTabChecks() tea.Cmd {
+	if m.tabChecksAt == nil {
+		m.tabChecksAt = map[string]time.Time{}
+	}
+	var cmds []tea.Cmd
+	for _, root := range m.projectTabs.Projects() {
+		if time.Since(m.tabChecksAt[root]) < tabChecksEvery {
+			continue
+		}
+		m.tabChecksAt[root] = time.Now()
+		_, number := prRoom(m.issueCache[root])
+		cmds = append(cmds, func() tea.Msg {
+			var pr git.PullRequest
+			var ok bool
+			if number > 0 {
+				pr, ok = git.PRByNumber(root, number)
+			} else {
+				pr, ok = git.CurrentPR(root)
+			}
+			return tabChecksMsg{root: root, pr: pr, ok: ok}
+		})
+	}
+	return tea.Batch(cmds...)
+}
+
+func (m *home) applyTabChecks(msg tabChecksMsg) {
+	var c ui.TabChecks
+	if msg.ok && (msg.pr.State == "" || msg.pr.State == "OPEN") { // a merged PR's old checks say nothing
+		if text, col := tabChecksText(msg.pr); text != "" {
+			c = ui.TabChecks{Text: text, Color: string(col)}
+		}
+	}
+	m.projectTabs.SetChecks(msg.root, c)
 }
