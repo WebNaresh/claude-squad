@@ -114,3 +114,19 @@ func CurrentPR(root string) (PullRequest, bool) {
 	}
 	return pr, true
 }
+
+// PRByNumber is CurrentPR for a given pull request number (the batch PR the
+// progress strip shows, which need not be the checked-out branch's PR).
+func PRByNumber(root string, number int) (PullRequest, bool) {
+	cmd := exec.Command("gh", "pr", "view", strconv.Itoa(number), "--json", "number,url,state,statusCheckRollup")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		return PullRequest{}, false
+	}
+	var pr PullRequest
+	if json.Unmarshal(out, &pr) != nil || pr.Number == 0 {
+		return PullRequest{}, false
+	}
+	return pr, true
+}
