@@ -125,7 +125,7 @@ func joining(issues []session.Issue, busy map[int]bool) int {
 
 // stepAuto runs autoCheck and schedules the next one.
 func (m *home) stepAuto() tea.Cmd {
-	return tea.Batch(m.autoCheck(), autoTick())
+	return tea.Batch(m.autoCheck(), m.refreshTabChecks(), autoTick())
 }
 
 // autoCheck works out, for every auto project, how many issues could start
