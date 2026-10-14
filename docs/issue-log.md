@@ -250,3 +250,9 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - A test pressed Enter on the user's real session and moved it. → Check the selected row on screen before any destructive key (CLAUDE.md "Live tests").
 - A test `cd`'d into a temp repo; the zsh hook started gai-watch, which committed. → Use `git -C`, never `cd`.
 - Tests wrote to the real activity.log. → `inTest` guard in `app/keylog.go`.
+
+### Remove an issue from its PR and skip it took two manual steps (2026-10-14)
+- **Saw:** the user asked the Claude in an issue's tile to edit the PR body, then pressed `x` for the same issue in the picker (practice-stack #2510 in PR #2519).
+- **Fix:** ⌃Space then `U` on an issue's tile asks, marks the issue skipped, and runs `gai issue <n> --remove` in a short-lived tmux session that cs answers (Enter on the rewrite question, cursor onto the issue's PR in the PR list). File: `app/unlink.go`. `/skip` (the skill) also reverts the issue's commits.
+- **Guard:** `TestUnlinkResultNotOnPR`; `TestUnlinkSkipsAndAnswersGai` skips unless tmux resolves to its own temp socket.
+- **Lesson (same day):** that test first called `tmux kill-server` with only `TMUX_TMPDIR` set. `$TMUX` wins over it, so it killed the user's real tmux server and every session. Tests must clear `TMUX`, check `#{socket_path}`, and never use kill-server.
