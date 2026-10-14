@@ -264,7 +264,8 @@ type home struct {
 	sourceControl *ui.SourceControl
 	scLoading     map[string]bool
 	scCache       map[string]scStatusMsg
-	bar           statusBar // branch, push and PR at the right of the bottom row
+	bar           statusBar            // branch, push and PR at the right of the bottom row
+	tabChecksAt   map[string]time.Time // last checks read per project tab
 	// commitOverlay is the commit message box shown in stateCommit
 	commitOverlay *overlay.TextInputOverlay
 }
@@ -615,9 +616,15 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.bar.sync = map[string]git.SyncState{}
 		}
 		m.bar.sync[msg.root] = msg.sync
-		return m, m.refreshPR(msg.root, msg.branch)
+		return m, tea.Batch(m.refreshPR(msg.root, msg.branch), m.refreshStripPR(msg.root))
 	case prMsg:
 		m.applyPR(msg)
+		return m, nil
+	case stripPRMsg:
+		m.applyStripPR(msg)
+		return m, nil
+	case tabChecksMsg:
+		m.applyTabChecks(msg)
 		return m, nil
 	case pullStartMsg:
 		return m, m.startPull(msg.root)
