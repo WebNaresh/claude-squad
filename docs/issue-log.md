@@ -230,6 +230,17 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Fix:** issues whose session is running but which aren't on a PR yet count as taking a place (`joining`, used by the background runner and the window's picker). Test: `TestJoiningTakesPRRoom`.
 - **Also found:** the runner's activity.log lines were unreadable since 10 Oct. The window and the runner share the log; when one cut it back (renamed to `.old`), the other kept writing to the renamed file, then to a deleted one. Each process now reopens the log by path when the file there is a different one (`samePath`, checked every 500ms).
 
+### PR #2435 showed 67 issues, GitHub showed 81 (2026-10-14)
+- **Saw:** the strip said `PR #2435 67/15 issues · 33 open`; GitHub's PR list said 81 linked issues. 67 + 33 = exactly 100.
+- **Cause:** cs read `gh issue list --limit 100`, newest first. practice-stack had 117 open issues, so the 17 oldest (#2412 and older) were never seen: 14 of them were on the PR (81 - 67), 3 were free (33 open should have been 36). The count is built from that list, not from the PR.
+- **Fix:** `issueListLimit` is 1000. The merged-PR read (used to tell an issue a merged PR already fixed) goes back 300 PRs instead of 100, so an old issue newly visible doesn't show as free. File: `session/issues.go`.
+- **Guard:** with the project at more than 100 open issues, strip count for the PR = `closingIssuesReferences` total on GitHub (`gh pr view <n> --json closingIssuesReferences`).
+
+### PR checks showed only at the bottom, not on the top strip (2026-10-14)
+- **Saw:** the bottom bar had `PR #65 ● 2 of 2 running`; the top strip (`PR #2435 … 81/15 issues`) said nothing about the PR's checks, and the two can be different PRs (checked-out branch vs the batch PR issues gather on).
+- **Fix:** the strip reads the checks of its own PR (`PRByNumber`, every 10s with the Source Control refresh) and draws them after the issues count: `● 2 of 2 running` / `✗ 1 failed` / `✓ 5/5 checks`. Merged PRs and PRs with no checks show nothing. Files: `app/progress.go`, `app/statusbar.go`, `session/git/sync.go`. Test: `TestProgressStripShowsChecks`.
+- **Same day, clarified:** the user meant the project tabs row (`practice-stack (1) │ abhyaiska │ claude-squad (1) …`), checks only: each tab gets a chip `✓ 2/2` / `● 2 running` / `✗ 1 failed` for its PR (batch PR when issues gathered on one, else the checked-out branch's PR; merged → none). Read per project every 30s (`refreshTabChecks`, from the auto tick). The strip keeps only the checks beside its batch PR. Files: `ui/projecttabs.go`, `app/statusbar.go`. Test: `TestTabChecksChip`.
+
 ### Unticking in the issue picker skipped the issue for good (2026-10-13)
 - **Saw:** the user wanted 3 or 4 of the ticked issues; unticking the rest with space marked each "(skipped)", so auto never offered them again and they looked gone. They asked for skip to be its own key, and for a quick way to start exactly 1, 2 or 6.
 - **Fix:** space only ticks/unticks (ticking a skipped issue takes the skip back). `x` skips or un-skips; a skipped issue stays in the list, greyed, and can be ticked any time. Digits 1-9 tick the first N startable issues in list order (no session, not skipped) and untick the rest. File: `ui/issuepicker.go`. Test: `TestPickerTickSkipAndCount`.
