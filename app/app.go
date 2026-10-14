@@ -626,6 +626,10 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tabChecksMsg:
 		m.applyTabChecks(msg)
 		return m, nil
+	case unlinkPollMsg:
+		return m, pollUnlink(msg)
+	case unlinkDoneMsg:
+		return m, tea.Batch(m.handleError(fmt.Errorf("%s", msg.text)), loadIssues(msg.project))
 	case pullStartMsg:
 		return m, m.startPull(msg.root)
 	case pullDoneMsg:
