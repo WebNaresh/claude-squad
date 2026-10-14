@@ -163,6 +163,13 @@ func (m *home) renderProgress(width int) string {
 		if s.pr > 0 {
 			parts = append(parts, progLabel.Render(fmt.Sprintf("PR #%d ", s.pr))+bar(s.inPR, autoMaxPerPR, 15)+" "+
 				progValue.Render(fmt.Sprintf("%d/%d", s.inPR, autoMaxPerPR))+progLabel.Render(" issues"))
+			// The PR's checks, beside its issues: red/green/running without
+			// looking at the bottom bar (which shows the checked-out branch's PR).
+			if pr, ok := m.stripPR(project, s.pr); ok && (pr.State == "" || pr.State == "OPEN") {
+				if text, c := checkText(pr); text != "" {
+					parts[len(parts)-1] += progLabel.Render("  ") + lipgloss.NewStyle().Foreground(c).Bold(true).Render(text)
+				}
+			}
 		} else {
 			parts = append(parts, progLabel.Render("no open PR yet"))
 		}
