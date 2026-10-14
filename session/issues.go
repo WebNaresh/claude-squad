@@ -33,6 +33,16 @@ type Issue struct {
 	QAFailed bool `json:"-"`
 }
 
+// issueListLimit caps the open issues cs reads. It was 100: practice-stack
+// had 117 open, the 17 oldest were never seen, so PR #2435 showed 67 issues
+// while GitHub linked 81 (and 3 free issues were missing from "open").
+const issueListLimit = "1000"
+
+// prListLimit is how many PRs per state are read to find taken issues. Merged
+// needs to reach back as far as the oldest open issue (Aug-Sep on practice-stack):
+// an old issue that a merged PR already fixed must not show as free.
+var prListLimit = map[string]string{"merged": "300", "open": "100"}
+
 // qaFailedLabel is what testers put on an issue whose fix failed testing.
 const qaFailedLabel = "qa:failed"
 
@@ -42,7 +52,7 @@ const qaFailedLabel = "qa:failed"
 func ListOpenIssues(dir string) ([]Issue, error) {
 	prs := make(chan map[int]prRef, 1)
 	go func() { prs <- openPRIssues(dir) }()
-	cmd := exec.Command("gh", "issue", "list", "--state", "open", "--limit", "100",
+	cmd := exec.Command("gh", "issue", "list", "--state", "open", "--limit", issueListLimit,
 		"--json", "number,title,url,body,createdAt")
 	cmd.Dir = dir
 	out, err := cmd.Output()
@@ -109,7 +119,7 @@ func openPRIssues(dir string) map[int]prRef {
 	// issue a merged PR lists but that is still open (reopened, or GitHub
 	// didn't close it) was worked on already: it is taken too (#944).
 	for _, state := range []string{"merged", "open"} {
-		cmd := exec.Command("gh", "pr", "list", "--state", state, "--limit", "100",
+		cmd := exec.Command("gh", "pr", "list", "--state", state, "--limit", prListLimit[state],
 			"--json", "number,closingIssuesReferences,author,mergedAt")
 		cmd.Dir = dir
 		out, err := cmd.Output()
