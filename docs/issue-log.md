@@ -256,3 +256,8 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Fix:** ⌃Space then `U` on an issue's tile asks, marks the issue skipped, and runs `gai issue <n> --remove` in a short-lived tmux session that cs answers (Enter on the rewrite question, cursor onto the issue's PR in the PR list). File: `app/unlink.go`. `/skip` (the skill) also reverts the issue's commits.
 - **Guard:** `TestUnlinkResultNotOnPR`; `TestUnlinkSkipsAndAnswersGai` skips unless tmux resolves to its own temp socket.
 - **Lesson (same day):** that test first called `tmux kill-server` with only `TMUX_TMPDIR` set. `$TMUX` wins over it, so it killed the user's real tmux server and every session. Tests must clear `TMUX`, check `#{socket_path}`, and never use kill-server.
+
+### Issue picker could not be refreshed by hand (2026-10-14)
+- **Saw:** the list sometimes took long to load (117 open issues, plus the PR reads) and showed stale or missing issues; the only way to reload was to close and reopen the picker.
+- **Fix:** `r` in the issue picker reloads the list now. Ticks and cursor stay, the footer starts with "⟳ refreshing…", and pressing `r` again just loads again, so a hung load never locks it out. `r` sits right after `x skip` in the key row, because the row is cut at the right on a narrow window. Files: `ui/issuepicker.go`, `app/issues.go`.
+- **Guard:** `TestPickerRefreshKeepsListAndCursor`.
