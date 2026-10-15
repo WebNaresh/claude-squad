@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"claude-squad/session"
@@ -59,5 +60,27 @@ func TestPickerTickSkipAndCount(t *testing.T) {
 	p.HandleKey("x") // x twice: back to normal
 	if p.skipped[2] {
 		t.Fatal("x again didn't un-skip")
+	}
+}
+
+func TestPickerRefreshKeepsListAndCursor(t *testing.T) {
+	p := NewIssuePicker("/p", "p")
+	p.SetSize(100, 40)
+	issues := []session.Issue{{Number: 1, Title: "a"}, {Number: 2, Title: "b"}}
+	p.SetIssues(issues, map[int]bool{}, nil)
+	p.HandleKey("down")
+	p.StartRefresh()
+	if !strings.Contains(p.Render(), "refreshing…") {
+		t.Fatal("no refreshing note while the reload is in flight")
+	}
+	p.SetIssues(append(issues, session.Issue{Number: 3, Title: "c"}), map[int]bool{}, nil)
+	if strings.Contains(p.Render(), "refreshing…") {
+		t.Fatal("refreshing note stays after the list arrived")
+	}
+	if cur, _ := p.Current(); cur.Number != 2 {
+		t.Fatalf("cursor moved to #%d", cur.Number)
+	}
+	if !strings.Contains(p.Render(), "refresh") {
+		t.Fatal("key row has no refresh")
 	}
 }
