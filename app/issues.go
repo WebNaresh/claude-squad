@@ -249,6 +249,14 @@ func (m *home) handleIssuePickerKey(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 	}
+	if msg.String() == "r" {
+		// Reload the list now (a load can take a while on a big repo). The
+		// ticks and the cursor stay. Pressed again it just loads again: a
+		// slow or hung load must never lock r out.
+		p.StartRefresh()
+		logEvent("issue picker: refresh %s", filepath.Base(p.Project))
+		return loadIssues(p.Project)
+	}
 	if msg.String() == "a" {
 		m.toggleAuto(p.Project)
 		p.AutoOn = m.autoOn(p.Project)
