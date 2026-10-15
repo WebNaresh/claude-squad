@@ -163,6 +163,13 @@ func (p *IssuePicker) ShowCached(issues []session.Issue, busy map[int]bool) {
 	p.stale = true
 }
 
+// StartRefresh marks a reload of the list in flight: the list on screen
+// stays, with "refreshing…" in the footer, until SetIssues brings the new one.
+func (p *IssuePicker) StartRefresh() { p.stale = true }
+
+// Refreshing reports a reload in flight (the list on screen is the old one).
+func (p *IssuePicker) Refreshing() bool { return p.stale }
+
 func (p *IssuePicker) SetSize(w, h int) { p.width, p.height = w, h }
 
 // Current returns the issue under the cursor.
@@ -249,7 +256,7 @@ func (p *IssuePicker) Render() string {
 		order, other = other, order
 	}
 	b.WriteString(ipTitleStyle.Render("Start Claude on issues") + "   project: " + ipTitleStyle.Render("‹ "+p.Name+" ›") + "   " + ipDimStyle.Render(order) + "\n")
-	b.WriteString(KeyRow("", []Key{{"enter", "start"}, {"esc", "cancel"}, {"space", "tick"}, {"x", "skip"}, {"1-9", "tick first N"}, {"↑↓", "move"},
+	b.WriteString(KeyRow("", []Key{{"enter", "start"}, {"esc", "cancel"}, {"space", "tick"}, {"x", "skip"}, {"r", "refresh"}, {"1-9", "tick first N"}, {"↑↓", "move"},
 		{"s", other}, {"←→", "project"}, {"o", "open"}, {"a", autoLabel(p.AutoOn)}, {"J/K", "scroll"}}, w-4) + "\n")
 	if p.Auto != "" {
 		b.WriteString(ipTitleStyle.Render("⟳ Auto: ") + p.Auto + "\n")
@@ -330,7 +337,7 @@ func (p *IssuePicker) Render() string {
 		foot += fmt.Sprintf(" · %d hidden: already in a PR (open or merged)", p.inPR)
 	}
 	if p.stale {
-		foot += " · refreshing…"
+		foot = "⟳ refreshing… · " + foot // first: the footer is cut at the right
 	}
 	b.WriteString("\n" + ipDimStyle.Render(runewidth.Truncate(foot, w-4, "…")))
 	return ipBoxStyle.Width(w).Render(b.String())
