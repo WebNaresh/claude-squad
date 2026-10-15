@@ -581,7 +581,12 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			go writeIssueCache(msg.project, msg.issues)
 		}
 		if m.issuePicker != nil && m.issuePicker.Project == msg.project {
+			failedRefresh := msg.err != nil && m.issuePicker.Refreshing()
 			m.issuePicker.SetIssues(msg.issues, m.busyIssues(msg.project), msg.err)
+			if failedRefresh {
+				// The old list stays; without this a failed r looks like "no news".
+				return m, m.handleError(fmt.Errorf("could not refresh the issue list: %w", msg.err))
+			}
 		}
 		return m, nil
 	case usageTickMsg:
