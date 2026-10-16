@@ -481,17 +481,36 @@ func (m *home) selectedRowKey() string {
 // holds no typed text (the line starting with ❯). Claude shows a dimmed
 // suggestion on an empty prompt, so dim text counts as empty.
 func promptEmpty(target string) bool {
+	text, ok := promptText(target)
+	return ok && text == ""
+}
+
+// promptText returns the text typed in a session's Claude input line
+// (dimmed suggestions left out), or ok=false when there is no input line.
+func promptText(target string) (string, bool) {
 	out, err := exec.Command("tmux", "capture-pane", "-p", "-e", "-t", target).Output()
 	if err != nil {
-		return false
+		return "", false
 	}
 	lines := strings.Split(string(out), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		if _, rest, ok := strings.Cut(lines[i], "❯"); ok && strings.TrimSpace(stripANSI(lines[i][:strings.Index(lines[i], "❯")])) == "" {
-			return strings.TrimSpace(undimmedText(rest)) == ""
+			text := strings.TrimSpace(undimmedText(rest))
+			// A draft of several lines goes on below the ❯ row, down to the
+			// box's bottom border.
+			for _, l := range lines[i+1:] {
+				l = strings.TrimSpace(undimmedText(l))
+				if strings.HasPrefix(l, "─") {
+					break
+				}
+				if l != "" {
+					text += "\n" + l
+				}
+			}
+			return text, true
 		}
 	}
-	return false
+	return "", false
 }
 
 var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
