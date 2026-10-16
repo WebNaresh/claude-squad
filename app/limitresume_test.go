@@ -71,3 +71,16 @@ func TestAccountSwitch(t *testing.T) {
 		t.Error("⏺ step after the limit not seen")
 	}
 }
+
+func TestContinueRest(t *testing.T) {
+	for typed, want := range map[string]string{"": "continue", "co": "ntinue", "Cont": "inue", "continue": ""} {
+		if got, ok := continueRest(typed); !ok || got != want {
+			t.Errorf("continueRest(%q) = %q, %v; want %q", typed, got, ok, want)
+		}
+	}
+	for _, typed := range []string{"fix the bug", "cx", "continue please"} {
+		if _, ok := continueRest(typed); ok {
+			t.Errorf("continueRest(%q) took a draft for continue", typed)
+		}
+	}
+}
