@@ -26,7 +26,7 @@ func isLeaderKey(k string) bool { return k == leaderKey || k == leaderSpace }
 
 // commandKeys are the Ctrl+] commands, in the order shown in the key bar.
 var commandKeys = []ui.Key{
-	{"C", "new Claude"}, {"T", "terminal"}, {"A", "add project"}, {"N", "issues"},
+	{"C", "new Claude"}, {"T", "terminal"}, {"E", "new terminal"}, {"A", "add project"}, {"N", "issues"},
 	{"S", "source control"}, {"P", "push"}, {"Y", "copy"}, {"W", "close session"}, {"U", "off PR + skip"}, {"X", "close tab"},
 	{"!", "needs you"}, {"?", "help"}, {"Q", "quit"},
 }
@@ -52,6 +52,8 @@ func (m *home) handleLeader(msg tea.KeyMsg) tea.Cmd {
 		return m.newClaudeSession()
 	case "t", "T":
 		return m.openTerminal()
+	case "e", "E":
+		return m.newTerminal()
 	case "w", "W":
 		return m.closeSession()
 	case "u", "U":
@@ -120,7 +122,7 @@ func (m *home) copySelected() tea.Cmd {
 // everydayKeys are the Ctrl+] commands shown in the key bar; the rest are
 // in help (Ctrl+] ?) and appear in the bar once Ctrl+] is pressed.
 var everydayKeys = []ui.Key{
-	{"C", "new Claude"}, {"T", "terminal"}, {"N", "issues"}, {"S", "source control"},
+	{"C", "new Claude"}, {"T", "terminal"}, {"E", "new terminal"}, {"N", "issues"}, {"S", "source control"},
 	{"←→", "project"}, {"?", "all keys"},
 }
 
