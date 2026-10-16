@@ -90,16 +90,104 @@ func (m *home) highlightSelection(view string) string {
 	return strings.Join(lines, "\n")
 }
 
-// selectedText returns the selected text from the screen as shown.
+// selectedText returns the selected text from the screen as shown, with
+// Claude's line wrapping undone (joinWrapped), so a long path or command
+// comes out as one line, not several with the indent in between.
 func (m *home) selectedText() string {
 	screen := strings.Split(m.lastView, "\n")
-	var out []string
+	// The pane sits inside the tile's text columns, one padding column on
+	// each side.
+	paneL, paneR := m.sel.x0+1, m.sel.x1-1
+	var rows []selRow
 	for y := range screen {
-		if from, to, ok := m.sel.span(y); ok {
-			out = append(out, strings.TrimRight(ansi.Strip(ansi.Cut(screen[y], from, to+1)), " "))
+		from, to, ok := m.sel.span(y)
+		if !ok {
+			continue
+		}
+		rows = append(rows, selRow{
+			text: strings.TrimRight(ansi.Strip(ansi.Cut(screen[y], from, to+1)), " "),
+			line: strings.TrimRight(ansi.Strip(ansi.Cut(screen[y], paneL, paneR+1)), " "),
+			end:  to >= paneR,
+		})
+	}
+	return joinWrapped(rows, paneR-paneL+1)
+}
+
+// selRow is one selected screen row: the selected text, the whole pane row,
+// and whether the selection runs to the row's end.
+type selRow struct {
+	text, line string
+	end        bool
+}
+
+// listStart matches a row that starts a new item rather than continuing the
+// one above: Claude's step and result marks, bullets, numbered items, the
+// prompt.
+var listStart = regexp.MustCompile(`^(?:[⏺●⎿❯✻│─╭╰>#]|[-*•] |\d+[.)] )`)
+
+// boxRow matches a row drawn with box characters: a rule, a table row.
+var boxRow = regexp.MustCompile(`^[─│├┼┤╭╰┌└━┃]`)
+
+// wraps reports whether Claude wrapped row a onto row b in a pane w columns
+// wide: a fills the pane (a word cut mid-way), or b's first word would not
+// have fit after a, so Claude moved it down (a command ending in ">" with
+// the long path on the next row).
+func wraps(a, b selRow, w int) bool {
+	if !a.end || strings.TrimSpace(a.line) == "" || strings.TrimSpace(b.line) == "" {
+		return false
+	}
+	// Box and table rows fill the pane but are drawn, not wrapped.
+	next := strings.TrimLeft(b.line, " ")
+	if boxRow.MatchString(strings.TrimLeft(a.line, " ")) || listStart.MatchString(next) {
+		return false
+	}
+	if ansi.StringWidth(a.line) >= w {
+		return true
+	}
+	first, _, _ := strings.Cut(next, " ")
+	// A word longer than a whole row (b is one cut piece of it) starts on
+	// the row before when there's room, so on a row of its own it began
+	// a new line ("The local file is:" then the path).
+	if first == next && ansi.StringWidth(b.line) >= w {
+		return false
+	}
+	return ansi.StringWidth(a.line)+1+ansi.StringWidth(first) > w
+}
+
+// joinWrapped joins wrapped rows and drops the indent all lines share.
+// A word or path too long for the row was cut mid-word, so it is joined
+// without a space; a row wrapped at a space gets the space back.
+func joinWrapped(rows []selRow, w int) string {
+	var lines []string
+	for i, r := range rows {
+		if i > 0 && len(lines) > 0 && wraps(rows[i-1], r, w) {
+			prev := strings.TrimSpace(rows[i-1].text)
+			sep := " "
+			if ansi.StringWidth(rows[i-1].line) >= w {
+				if last := prev[strings.LastIndex(prev, " ")+1:]; last == prev || strings.Contains(last, "/") {
+					sep = ""
+				}
+			}
+			lines[len(lines)-1] += sep + strings.TrimLeft(r.text, " ")
+			continue
+		}
+		lines = append(lines, r.text)
+	}
+	indent := -1
+	for _, l := range lines {
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		if n := len(l) - len(strings.TrimLeft(l, " ")); indent < 0 || n < indent {
+			indent = n
 		}
 	}
-	return strings.TrimRight(strings.Join(out, "\n"), "\n")
+	for i, l := range lines {
+		if len(l) >= indent && indent > 0 {
+			lines[i] = l[indent:]
+		}
+	}
+	return strings.TrimRight(strings.Join(lines, "\n"), "\n")
 }
 
 // finishSelection copies a dragged selection to the clipboard.
