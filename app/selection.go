@@ -108,6 +108,7 @@ func (m *home) selectedText() string {
 			text: strings.TrimRight(ansi.Strip(ansi.Cut(screen[y], from, to+1)), " "),
 			line: strings.TrimRight(ansi.Strip(ansi.Cut(screen[y], paneL, paneR+1)), " "),
 			end:  to >= paneR,
+			skip: paneL - from,
 		})
 	}
 	return joinWrapped(rows, paneR-paneL+1)
@@ -118,6 +119,7 @@ func (m *home) selectedText() string {
 type selRow struct {
 	text, line string
 	end        bool
+	skip       int // columns of text before the pane's first column (padding); negative when the drag started inside the row
 }
 
 // listStart matches a row that starts a new item rather than continuing the
@@ -159,6 +161,7 @@ func wraps(a, b selRow, w int) bool {
 // without a space; a row wrapped at a space gets the space back.
 func joinWrapped(rows []selRow, w int) string {
 	var lines []string
+	var indents, skips []int // each line's indent on screen (whole first row) and its first row's skip
 	for i, r := range rows {
 		if i > 0 && len(lines) > 0 && wraps(rows[i-1], r, w) {
 			prev := strings.TrimSpace(rows[i-1].text)
@@ -172,20 +175,25 @@ func joinWrapped(rows []selRow, w int) string {
 			continue
 		}
 		lines = append(lines, r.text)
+		indents = append(indents, len(r.line)-len(strings.TrimLeft(r.line, " ")))
+		skips = append(skips, r.skip)
 	}
+	// Drop the indent the lines share. It is measured on the whole row, so a
+	// drag that starts at the first letter ("Hi Chirag,", no spaces copied)
+	// doesn't stop the rows below losing theirs.
 	indent := -1
-	for _, l := range lines {
-		if strings.TrimSpace(l) == "" {
-			continue
-		}
-		if n := len(l) - len(strings.TrimLeft(l, " ")); indent < 0 || n < indent {
-			indent = n
+	for i, l := range lines {
+		if strings.TrimSpace(l) != "" && (indent < 0 || indents[i] < indent) {
+			indent = indents[i]
 		}
 	}
 	for i, l := range lines {
-		if len(l) >= indent && indent > 0 {
-			lines[i] = l[indent:]
+		// Spaces copied left of the shared indent's column go.
+		n := 0
+		for n < indent+skips[i] && n < len(l) && l[n] == ' ' {
+			n++
 		}
+		lines[i] = l[n:]
 	}
 	return strings.TrimRight(strings.Join(lines, "\n"), "\n")
 }
