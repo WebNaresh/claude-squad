@@ -34,6 +34,10 @@ type IssuePicker struct {
 	issues  []session.Issue
 	inPR    int          // open issues hidden because an open PR already closes them
 	stale   bool         // showing the last list while a fresh one loads
+	// refreshed says when the last reload landed, for the footer: an r that
+	// brought the same list changed nothing on screen and looked ignored.
+	refreshed string
+	loadStart time.Time // when the reload in flight started, for "refreshing… 5s"
 	busy    map[int]bool // issues that already have a session
 	skipped map[int]bool // issues the user unticked: not ticked by default again
 	// NewestFirst lists (and ticks) the newest issues first instead of the
@@ -103,6 +107,22 @@ func (p *IssuePicker) SetIssues(issues []session.Issue, busy map[int]bool, err e
 		p.Err, p.Loading, p.stale = nil, false, false
 		return
 	}
+	if refresh && p.stale && err == nil {
+		was := map[int]bool{}
+		for _, is := range p.issues {
+			was[is.Number] = true
+		}
+		added := 0
+		for _, is := range shown {
+			if !was[is.Number] {
+				added++
+			}
+		}
+		p.refreshed = fmt.Sprintf("✓ refreshed %s: %d listed", time.Now().Format("15:04:05"), len(shown))
+		if added > 0 {
+			p.refreshed += fmt.Sprintf(", %d new", added)
+		}
+	}
 	p.issues, p.busy, p.Err, p.Loading, p.stale = shown, busy, err, false, false
 	if refresh {
 		keep := map[int]bool{}
@@ -165,7 +185,15 @@ func (p *IssuePicker) ShowCached(issues []session.Issue, busy map[int]bool) {
 
 // StartRefresh marks a reload of the list in flight: the list on screen
 // stays, with "refreshing…" in the footer, until SetIssues brings the new one.
-func (p *IssuePicker) StartRefresh() { p.stale = true }
+func (p *IssuePicker) StartRefresh() { p.stale, p.refreshed, p.loadStart = true, "", time.Now() }
+
+// RefreshingFor is how long the reload in flight has run (0: none).
+func (p *IssuePicker) RefreshingFor() time.Duration {
+	if !p.stale || p.loadStart.IsZero() {
+		return 0
+	}
+	return time.Since(p.loadStart)
+}
 
 // Refreshing reports a reload in flight (the list on screen is the old one).
 func (p *IssuePicker) Refreshing() bool { return p.stale }
@@ -337,7 +365,13 @@ func (p *IssuePicker) Render() string {
 		foot += fmt.Sprintf(" · %d hidden: already in a PR (open or merged)", p.inPR)
 	}
 	if p.stale {
-		foot = "⟳ refreshing… · " + foot // first: the footer is cut at the right
+		took := ""
+		if d := p.RefreshingFor(); d >= time.Second {
+			took = fmt.Sprintf(" %ds", int(d.Seconds()))
+		}
+		foot = "⟳ refreshing from GitHub…" + took + " · " + foot // first: the footer is cut at the right
+	} else if p.refreshed != "" {
+		foot = p.refreshed + " · " + foot
 	}
 	b.WriteString("\n" + ipDimStyle.Render(runewidth.Truncate(foot, w-4, "…")))
 	return ipBoxStyle.Width(w).Render(b.String())
