@@ -392,7 +392,7 @@ func (t *parentTable) of(pid int) int {
 	if !t.loaded {
 		t.loaded = true
 		t.ppid = map[int]int{}
-		if out, err := exec.Command("ps", "-axo", "pid=,ppid=").Output(); err == nil {
+		if out, err := ProcOutput("ps", "-axo", "pid=,ppid="); err == nil {
 			for _, line := range strings.Split(string(out), "\n") {
 				f := strings.Fields(line)
 				if len(f) == 2 {
@@ -918,7 +918,7 @@ func EndEditorWait(name string) bool {
 	if pane <= 1 {
 		return false
 	}
-	ps, err := exec.Command("ps", "-axo", "pid=,ppid=,args=").Output()
+	ps, err := ProcOutput("ps", "-axo", "pid=,ppid=,args=")
 	if err != nil {
 		return false
 	}
