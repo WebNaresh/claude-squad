@@ -109,6 +109,9 @@ func (m *home) handleGridMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
 	}
 	hit, ok := m.hitGrid(msg.X, msg.Y)
 	if !ok {
+		if msg.Button == tea.MouseButtonLeft {
+			logEvent("click %d,%d: no tile there (source control focused=%v, tiles=%d)", msg.X, msg.Y, m.sourceControl.Focused(), len(m.gridTiles))
+		}
 		return nil, false
 	}
 	if hit.ghost {
@@ -161,6 +164,7 @@ func (m *home) handleGridMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
 	}
 
 	wasFocused := rowKey(entry.Instance, entry.External) == m.selectedRowKey()
+	logEvent("click %d,%d: tile %d of %d, %s (already selected=%v)", msg.X, msg.Y, hit.idx+1, len(rows), rowKey(entry.Instance, entry.External), wasFocused)
 	// A click is input too: without this, a question auto-jumped away 89ms
 	// after a click on another tile, so ⌃Space W nearly closed the wrong one.
 	m.lastKey, m.lastPick = time.Now(), time.Now()
