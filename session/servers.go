@@ -1,9 +1,12 @@
 package session
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,9 +33,13 @@ type Server struct {
 
 // ListServers returns the listening TCP ports of the user's processes.
 func ListServers() ([]Server, error) {
-	out, err := exec.Command("lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-F", "pn").Output()
+	out, err := ProcOutput("lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-F", "pn")
 	if err != nil && len(out) == 0 {
-		return nil, nil // lsof exits 1 when nothing listens
+		if !errors.Is(err, context.DeadlineExceeded) {
+			return nil, nil // lsof exits 1 when nothing listens
+		}
+		// Killed after procTimeout (laptop overloaded): not "no servers".
+		return nil, err
 	}
 	seen := map[[2]int]bool{}
 	var servers []Server
@@ -92,12 +99,14 @@ func ListServers() ([]Server, error) {
 		if s.Tmux == "" && !s.ByClaude && orphan && ppid[top] == 1 {
 			s.Root = top
 		}
-		pids = append(pids, strconv.Itoa(s.PID))
+		if !slices.Contains(pids, strconv.Itoa(s.PID)) { // one per process, not per port
+			pids = append(pids, strconv.Itoa(s.PID))
+		}
 	}
 
 	// Command lines and working folders, one call each for all of them.
 	args := map[int]string{}
-	if out, err := exec.Command("ps", "-o", "pid=,args=", "-p", strings.Join(pids, ",")).Output(); err == nil {
+	if out, err := ProcOutput("ps", "-o", "pid=,args=", "-p", strings.Join(pids, ",")); err == nil {
 		for _, l := range strings.Split(string(out), "\n") {
 			f := strings.Fields(l)
 			if len(f) >= 2 {
@@ -107,7 +116,7 @@ func ListServers() ([]Server, error) {
 		}
 	}
 	cwds := map[int]string{}
-	if out, err := exec.Command("lsof", "-a", "-d", "cwd", "-F", "pn", "-p", strings.Join(pids, ",")).Output(); err == nil || len(out) > 0 {
+	if out, err := ProcOutput("lsof", "-a", "-d", "cwd", "-F", "pn", "-p", strings.Join(pids, ",")); err == nil || len(out) > 0 {
 		p := 0
 		for _, l := range strings.Split(string(out), "\n") {
 			if len(l) < 2 {
@@ -138,7 +147,7 @@ func ListServers() ([]Server, error) {
 // processTable returns every process's parent and executable, from one ps call.
 func processTable() (ppid map[int]int, comm map[int]string) {
 	ppid, comm = map[int]int{}, map[int]string{}
-	out, err := exec.Command("ps", "-axo", "pid=,ppid=,comm=").Output()
+	out, err := ProcOutput("ps", "-axo", "pid=,ppid=,comm=")
 	if err != nil {
 		return
 	}
