@@ -1,6 +1,7 @@
 package app
 
 import (
+	"claude-squad/session"
 	"fmt"
 	"os"
 	"os/exec"
@@ -74,7 +75,7 @@ func collectUsage() string {
 
 // psSelf returns cs's own CPU% and RSS (KB).
 func psSelf() (string, int) {
-	out, err := exec.Command("ps", "-o", "%cpu=,rss=", "-p", strconv.Itoa(os.Getpid())).Output()
+	out, err := session.ProcOutput("ps", "-o", "%cpu=,rss=", "-p", strconv.Itoa(os.Getpid()))
 	if err != nil {
 		return "?", 0
 	}
@@ -88,7 +89,7 @@ func psSelf() (string, int) {
 
 // psMatch sums processes whose command matches: count, RSS (KB), CPU%.
 func psMatch(match func(cmd string) bool) (n, rss int, cpu float64) {
-	out, err := exec.Command("ps", "-axo", "rss=,%cpu=,command=").Output()
+	out, err := session.ProcOutput("ps", "-axo", "rss=,%cpu=,command=")
 	if err != nil {
 		return 0, 0, 0
 	}
