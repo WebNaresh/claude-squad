@@ -84,3 +84,20 @@ func TestSelectedTextKeepsTableRows(t *testing.T) {
 		t.Errorf("got %q\nwant %q", got, want)
 	}
 }
+
+// The user's case: the drag starts on the "H" of "Hi Chirag," (no spaces
+// copied on that row), the rows below still lose Claude's 2-space indent.
+func TestSelectedTextDropsIndentWhenDragStartsAtText(t *testing.T) {
+	m := &home{lastView: tileView(
+		"  Hi Chirag,",
+		"",
+		"  Thanks for the",
+		"  report.",
+		"    1. Open it.",
+	)}
+	m.sel = tileSelection{x0: 1, x1: 22, y0: 0, y1: 4, sx: 4, sy: 0, ex: 22, ey: 4, shown: true}
+	want := "Hi Chirag,\n\nThanks for the report.\n  1. Open it."
+	if got := m.selectedText(); got != want {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+}
