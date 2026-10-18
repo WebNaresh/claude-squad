@@ -8,6 +8,7 @@ import (
 	"github.com/mattn/go-runewidth"
 	"os/exec"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -165,6 +166,9 @@ func (m *home) keyBar(width int) string {
 			keys = append([]ui.Key{{"I", "type into the selected tile"}}, everydayKeys...)
 		}
 	}
+	if !m.leader && !m.appConfig.MouseOff && m.mouseSilent() {
+		now = []ui.Key{{"⌘R", "clicks do nothing? turn on Terminal's mouse reporting"}}
+	}
 	return ui.KeyBar(state, now, lead, keys, width)
 }
 
@@ -206,4 +210,12 @@ func (m *home) leaderMenu() string {
 	}
 	rows = append(rows, "", leaderDimStyle.Render("press a key · esc cancels"))
 	return leaderBoxStyle.Render(strings.Join(rows, "\n"))
+}
+
+// mouseSilent reports that the terminal has sent no mouse event since cs
+// started a while ago: Terminal's View › Allow Mouse Reporting (⌘R) is off,
+// so clicks select text in Terminal instead of reaching cs. It went off once
+// for hours unnoticed; tiles and images looked broken.
+func (m *home) mouseSilent() bool {
+	return m.lastMouse.IsZero() && time.Since(m.startedAt) > 2*time.Minute
 }
