@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -67,13 +68,30 @@ func ListOpenIssues(dir string) ([]Issue, error) {
 		return nil, fmt.Errorf("gh issue list: %w", err)
 	}
 	inPR := <-prs
+	// One gh call per issue with a merged PR. Run one after another they
+	// made a refresh take 8–25s (r looked stuck on "refreshing…").
+	failed := make([]bool, len(issues))
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, 8)
+	for i := range issues {
+		if ref := inPR[issues[i].Number]; ref.merged {
+			wg.Add(1)
+			go func(i int, at time.Time) {
+				defer wg.Done()
+				slots <- struct{}{}
+				defer func() { <-slots }()
+				failed[i] = qaFailedAfter(dir, issues[i].Number, at)
+			}(i, ref.mergedAt)
+		}
+	}
+	wg.Wait()
 	for i := range issues {
 		// Some titles are pasted with line breaks; one line keeps the list readable.
 		issues[i].Title = strings.Join(strings.Fields(issues[i].Title), " ")
 		ref := inPR[issues[i].Number]
 		// Failed testing after its PR merged: back in the queue, unless a
 		// newer PR already took it again.
-		if ref.merged && qaFailedAfter(dir, issues[i].Number, ref.mergedAt) {
+		if failed[i] {
 			issues[i].QAFailed = true
 			continue
 		}
@@ -114,44 +132,134 @@ func qaFailedAfter(dir string, number int, mergedAt time.Time) bool {
 // Claude app's own fix PRs) are marked: their issues are taken, but cs must
 // never gather issues on them (it once attached 14 to one).
 func openPRIssues(dir string) map[int]prRef {
+	// Merged and open lists load at the same time; merged ones go in first,
+	// so an open PR closing the same issue wins below. An issue a merged PR
+	// lists but that is still open (reopened, or GitHub didn't close it) was
+	// worked on already: it is taken too (#944).
+	var merged, open []prInfo
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); merged = mergedPRs(dir) }()
+	go func() { defer wg.Done(); open, _ = listPRs(dir, "open", prListLimit["open"]) }()
+	wg.Wait()
 	m := map[int]prRef{}
-	// Merged PRs first, so an open PR closing the same issue wins below. An
-	// issue a merged PR lists but that is still open (reopened, or GitHub
-	// didn't close it) was worked on already: it is taken too (#944).
-	for _, state := range []string{"merged", "open"} {
-		cmd := exec.Command("gh", "pr", "list", "--state", state, "--limit", prListLimit[state],
-			"--json", "number,closingIssuesReferences,author,mergedAt")
-		cmd.Dir = dir
-		out, err := cmd.Output()
-		if err != nil {
-			continue
-		}
-		var prs []struct {
-			Number   int       `json:"number"`
-			MergedAt time.Time `json:"mergedAt"`
-			Closes   []struct {
-				Number int `json:"number"`
-			} `json:"closingIssuesReferences"`
-			Author struct {
-				IsBot bool   `json:"is_bot"`
-				Login string `json:"login"`
-			} `json:"author"`
-		}
-		if json.Unmarshal(out, &prs) != nil {
-			continue
-		}
+	for _, prs := range [][]prInfo{merged, open} {
 		for _, pr := range prs {
-			bot := pr.Author.IsBot || strings.HasPrefix(pr.Author.Login, "app/") || strings.HasSuffix(pr.Author.Login, "[bot]")
-			for _, is := range pr.Closes {
+			for _, is := range pr.closes {
 				// The latest merge counts: a re-fix merged after a failed test.
-				if old, ok := m[is.Number]; ok && old.merged && state == "merged" && old.mergedAt.After(pr.MergedAt) {
+				if old, ok := m[is]; ok && old.merged && pr.merged && old.mergedAt.After(pr.mergedAt) {
 					continue
 				}
-				m[is.Number] = prRef{number: pr.Number, bot: bot, merged: state == "merged", mergedAt: pr.MergedAt}
+				m[is] = prRef{number: pr.number, bot: pr.bot, merged: pr.merged, mergedAt: pr.mergedAt}
 			}
 		}
 	}
 	return m
+}
+
+// prInfo is one PR from gh pr list.
+type prInfo struct {
+	number   int
+	bot      bool
+	merged   bool
+	mergedAt time.Time
+	closes   []int
+}
+
+// mergedCache keeps each repo's merged PRs: listing 300 of them takes GitHub
+// ~7s, which made every r in the issue picker look stuck. Merged PRs never
+// change, so after the first full list only the newest mergedRecent are read
+// and added, and the full list is read again after mergedFullEvery.
+var (
+	mergedMu    sync.Mutex
+	mergedCache = map[string]mergedEntry{}
+)
+
+type mergedEntry struct {
+	prs map[int]prInfo
+	at  time.Time // last full list
+}
+
+const (
+	mergedRecent    = "30"
+	mergedFullEvery = 30 * time.Minute
+)
+
+func mergedPRs(dir string) []prInfo {
+	mergedMu.Lock()
+	e, ok := mergedCache[dir]
+	mergedMu.Unlock()
+	full := !ok || time.Since(e.at) > mergedFullEvery
+	limit := mergedRecent
+	if full {
+		limit = prListLimit["merged"]
+	}
+	prs, err := listPRs(dir, "merged", limit)
+	if err != nil {
+		if ok {
+			return e.list()
+		}
+		return nil
+	}
+	if full {
+		e = mergedEntry{prs: map[int]prInfo{}, at: time.Now()}
+	} else {
+		cp := make(map[int]prInfo, len(e.prs)+len(prs))
+		for k, v := range e.prs {
+			cp[k] = v
+		}
+		e.prs = cp
+	}
+	for _, pr := range prs {
+		e.prs[pr.number] = pr
+	}
+	mergedMu.Lock()
+	mergedCache[dir] = e
+	mergedMu.Unlock()
+	return e.list()
+}
+
+func (e mergedEntry) list() []prInfo {
+	out := make([]prInfo, 0, len(e.prs))
+	for _, pr := range e.prs {
+		out = append(out, pr)
+	}
+	return out
+}
+
+// listPRs reads up to limit PRs in state (open or merged).
+func listPRs(dir, state, limit string) ([]prInfo, error) {
+	cmd := exec.Command("gh", "pr", "list", "--state", state, "--limit", limit,
+		"--json", "number,closingIssuesReferences,author,mergedAt")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var prs []struct {
+		Number   int       `json:"number"`
+		MergedAt time.Time `json:"mergedAt"`
+		Closes   []struct {
+			Number int `json:"number"`
+		} `json:"closingIssuesReferences"`
+		Author struct {
+			IsBot bool   `json:"is_bot"`
+			Login string `json:"login"`
+		} `json:"author"`
+	}
+	if err := json.Unmarshal(out, &prs); err != nil {
+		return nil, err
+	}
+	var res []prInfo
+	for _, pr := range prs {
+		p := prInfo{number: pr.Number, merged: state == "merged", mergedAt: pr.MergedAt,
+			bot: pr.Author.IsBot || strings.HasPrefix(pr.Author.Login, "app/") || strings.HasSuffix(pr.Author.Login, "[bot]")}
+		for _, is := range pr.Closes {
+			p.closes = append(p.closes, is.Number)
+		}
+		res = append(res, p)
+	}
+	return res, nil
 }
 
 // OpenInBrowser opens a URL in the default browser.
