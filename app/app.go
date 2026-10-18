@@ -59,6 +59,11 @@ func Run(ctx context.Context, program string, autoYes bool) error {
 	// the renderer (which only redraws changed rows) leaves old text behind.
 	// With it off, the row's last column is clipped instead.
 	fmt.Print(autoWrapOff)
+	// Clear the terminal's scrollback: when the wheel doesn't reach cs
+	// (Terminal's mouse reporting off), Terminal scrolls its own history
+	// instead, and old text from before cs ("wrote logs to …") showed above
+	// the tiles as if a tile had scrolled.
+	fmt.Print("\x1b[3J")
 	_, err := p.Run()
 	fmt.Print(autoWrapOn)
 	if restarted {
@@ -243,9 +248,11 @@ type home struct {
 	// ghost is a just-closed tile's place, shown a few seconds (closeghost.go)
 	ghost *closeGhost
 	// accentOf is each session's colour index (closeghost.go)
-	accentOf      map[string]int
-	serverCursor  int
-	dockCapturing bool
+	accentOf       map[string]int
+	serverCursor   int
+	serversLoading bool      // a server listing is running (servers.go)
+	lastMouse      time.Time // last mouse event from the terminal
+	dockCapturing  bool
 	// lastSessions/lastAgents are what the last refresh saw (for the activity log)
 	lastSessions map[string]string
 	lastAgents   map[string]string
@@ -582,6 +589,9 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.issuePicker != nil && m.issuePicker.Project == msg.project {
 			failedRefresh := msg.err != nil && m.issuePicker.Refreshing()
+			if m.issuePicker.Refreshing() {
+				logEvent("issue picker: loaded %s, %d issues in %s (err=%v)", filepath.Base(msg.project), len(msg.issues), m.issuePicker.RefreshingFor().Round(time.Millisecond), msg.err)
+			}
 			m.issuePicker.SetIssues(msg.issues, m.busyIssues(msg.project), msg.err)
 			if failedRefresh {
 				// The old list stays; without this a failed r looks like "no news".
@@ -598,8 +608,15 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case autoTickMsg:
 		return m, m.stepAuto()
 	case serversTickMsg:
+		// One listing at a time: when ps is slow, a new one every tick piled up
+		// (35 ps running at once).
+		if m.serversLoading {
+			return m, serversTick(serversEvery)
+		}
+		m.serversLoading = true
 		return m, tea.Batch(refreshServers(), serversTick(serversEvery))
 	case serversMsg:
+		m.serversLoading = false
 		return m, m.applyServers(msg)
 	case keyboardCheckMsg:
 		for _, name := range msg.repaired {
@@ -754,6 +771,12 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshTabs(msg.path)
 		return m, m.switchProject(msg.path)
 	case tea.MouseMsg:
+		if m.lastMouse.IsZero() {
+			// None at all means the terminal sends no mouse events: Terminal's
+			// View › Allow Mouse Reporting (⌘R) is off.
+			logEvent("mouse: first event from the terminal this run (%s)", tea.MouseEvent(msg).String())
+		}
+		m.lastMouse = time.Now()
 		// Clicks on the project tab row: switch tab or add a project.
 		// Clicks on the status bar (the last row).
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft && msg.Y == m.screenHeight-1 && m.state == stateDefault {
