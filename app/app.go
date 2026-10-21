@@ -215,6 +215,7 @@ type home struct {
 	// there against auto-jumps for pickHold
 	sel            tileSelection        // mouse text selection in a tile (selection.go)
 	justClosed     map[string]time.Time // tiles closed a moment ago (closeSession)
+	reopened       map[string]time.Time // session IDs reopened a moment ago (reopenClosed)
 	needsSeen      map[string]bool
 	questionJumped map[string]bool
 	lastKey        time.Time
@@ -846,9 +847,6 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle errors from confirmation actions
 		return m, m.handleError(msg)
 	case externalClosedMsg:
-		if m.justClosed == nil {
-			m.justClosed = map[string]time.Time{}
-		}
 		if msg.finished && msg.project != "" && m.progress != nil {
 			m.progress.addDone(msg.project)
 		}
@@ -858,10 +856,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.noteClosed(entry)
 			m.noteGhost(msg.name, msg.title) // before the grid drops it
 		}
-		for _, k := range closedKeys(msg.name, msg.sessionID, msg.pid) {
-			m.justClosed[k] = time.Now()
-		}
-		m.setExternalSessions(m.list.ExternalSessions())
+		m.hideClosed(msg)
 		delete(m.tileCache, "session:"+msg.name)
 		// Rebuild the grid now, even if a capture is running (its stale
 		// result is dropped in applyGridCapture).
@@ -1526,7 +1521,11 @@ func (m *home) setExternalSessions(sessions []*session.ExternalSession) {
 		kept := sessions[:0:0]
 		for _, e := range sessions {
 			hidden := false
-			for _, k := range closedKeys(e.Name, e.SessionID, e.Pid) {
+			keys := closedKeys(e.Name, e.SessionID, e.Pid)
+			if e.Kind == session.KindTerminal && e.SessionID != "" {
+				keys = append(keys, ghostKey(e.SessionID))
+			}
+			for _, k := range keys {
 				if at, ok := m.justClosed[k]; ok && time.Since(at) < justClosedFor {
 					hidden = true
 				}
