@@ -290,3 +290,9 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Saw:** the dock terminal ran `turbo dev` (glitchgrab); ⌃Space T only shows/hides that same dock, so there was no shell left for git or a second command.
 - **Fix:** ⌃Space E opens a fresh shell in the project folder (`csterm_<folder>-2`, -3, …) as a grid tile and types into it; the dock keeps running. On the key bar and in help. Files: `session/external.go` (`NewProjectShell`), `app/terminal.go` (`newTerminal`), `app/leader.go`, `app/help.go`.
 - **Guard:** live test on a `tmux -L cstest` socket: `sleep 999` in the dock, ⌃Space E, typed into the new tile.
+
+### One conversation open in 2 tiles; closing one closed both (#2616, 2026-10-21)
+- **Saw:** two tiles of mca-connection-alert-drops-#2616 with "same conversation open in 2 tiles · close one". The user: "if I close one which I am not working in, it closes both".
+- **Cause:** (1) one click on "↺ reopen" in Recently closed came as two mouse events; activity.log 13:07:14.707 and .722 "reopening cc_practice-stack (06862012…)" twice, so two `claude --resume` of the same session (`cc_practice-stack`, `cc_practice-stack_2`). (2) Closing a tile hid every tile with its session ID for 20s (`closedKeys` "sid:"), so the other tile vanished too.
+- **Fix:** a session reopened in the last 10s isn't reopened again (`reopenHold`, `app/recentclosed.go`). A closed tile is hidden by session ID only when no other tile has that conversation; then only its exiting Claude (a view-only `pid-N` row) is hidden by it (`hideClosed`, `ghostKey`, `app/terminal.go`). Closing a reopened session lifts the 10s hold.
+- **Guard:** `TestReopenOnceAndCloseOne`; activity.log shows one "reopening …" per click.
