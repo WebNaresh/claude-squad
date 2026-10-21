@@ -261,3 +261,8 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Saw:** the list sometimes took long to load (117 open issues, plus the PR reads) and showed stale or missing issues; the only way to reload was to close and reopen the picker.
 - **Fix:** `r` in the issue picker reloads the list now. Ticks and cursor stay, the footer starts with "⟳ refreshing…", and pressing `r` again just loads again, so a hung load never locks it out. `r` sits right after `x skip` in the key row, because the row is cut at the right on a narrow window. Files: `ui/issuepicker.go`, `app/issues.go`.
 - **Guard:** `TestPickerRefreshKeepsListAndCursor`.
+
+### Strip said "no open PR yet" with a PR open (2026-10-15)
+- **Saw:** seva_stack PR #555 (`gai pr` from `dev`) was open, but the strip read "no open PR yet · 15 open".
+- **Cause:** the strip finds the open PR only through the issues it closes (`closingIssuesReferences`). #555's body had no `Closes #N`, so no issue mapped to it.
+- **Fix:** with no issue-mapped PR, the strip shows the checked-out branch's open PR ("PR #N open"). File: `app/progress.go`. It does not count issues toward the 15-per-PR room; that still needs a `Closes #N` in the PR body (gai side).
