@@ -70,7 +70,7 @@ func TestPickerRefreshKeepsListAndCursor(t *testing.T) {
 	p.SetIssues(issues, map[int]bool{}, nil)
 	p.HandleKey("down")
 	p.StartRefresh()
-	if !strings.Contains(p.Render(), "refreshing…") {
+	if !strings.Contains(p.Render(), "refreshing from GitHub…") {
 		t.Fatal("no refreshing note while the reload is in flight")
 	}
 	p.SetIssues(append(issues, session.Issue{Number: 3, Title: "c"}), map[int]bool{}, nil)
@@ -82,5 +82,25 @@ func TestPickerRefreshKeepsListAndCursor(t *testing.T) {
 	}
 	if !strings.Contains(p.Render(), "refresh") {
 		t.Fatal("key row has no refresh")
+	}
+}
+
+// r on a list that came back the same must still show it reloaded: the
+// footer says "refreshed" with the count, and how many issues are new.
+func TestPickerRefreshShowsResult(t *testing.T) {
+	p := pickerWith(3)
+	p.SetSize(120, 30)
+	p.StartRefresh()
+	if !strings.Contains(p.Render(), "refreshing from GitHub") {
+		t.Fatal("no refreshing… while the reload runs")
+	}
+	p.SetIssues([]session.Issue{{Number: 1}, {Number: 2}, {Number: 3}}, map[int]bool{}, nil)
+	if v := p.Render(); !strings.Contains(v, "refreshed") || !strings.Contains(v, "3 listed") || strings.Contains(v, "new") {
+		t.Fatalf("same list: want \"refreshed … 3 listed\" and no \"new\", got footer of:\n%s", v)
+	}
+	p.StartRefresh()
+	p.SetIssues([]session.Issue{{Number: 1}, {Number: 2}, {Number: 3}, {Number: 4}}, map[int]bool{}, nil)
+	if v := p.Render(); !strings.Contains(v, "4 listed, 1 new") {
+		t.Fatalf("one added: want \"4 open, 1 new\", got:\n%s", v)
 	}
 }

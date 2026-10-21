@@ -2,6 +2,7 @@ package app
 
 import (
 	"claude-squad/session"
+	"claude-squad/ui"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -123,6 +124,25 @@ func (m *home) newClaudeSession() tea.Cmd {
 	logEvent("new Claude session in %s", project)
 	return func() tea.Msg {
 		name, err := session.StartSession(project, program)
+		if err != nil {
+			return err
+		}
+		list, _, _ := session.ListExternalSessions()
+		return sessionStartedMsg{name: name, sessions: list}
+	}
+}
+
+// newTerminal opens another shell in the active project's folder as a grid
+// tile, for when the dock is busy (a dev server running in it).
+func (m *home) newTerminal() tea.Cmd {
+	if !m.activeProjectExists() {
+		return m.handleError(fmt.Errorf("this project's folder no longer exists; close the tab with ⌃Space X"))
+	}
+	project := m.projectTabs.Active()
+	w, h := ui.GridTileSize(len(m.gridRows())+1, m.paneWidth, m.contentHeight)
+	logEvent("new terminal in %s", project)
+	return func() tea.Msg {
+		name, err := session.NewProjectShell(project, max(w, 20), max(h, 5))
 		if err != nil {
 			return err
 		}

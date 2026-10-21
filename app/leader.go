@@ -8,6 +8,7 @@ import (
 	"github.com/mattn/go-runewidth"
 	"os/exec"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -26,7 +27,7 @@ func isLeaderKey(k string) bool { return k == leaderKey || k == leaderSpace }
 
 // commandKeys are the Ctrl+] commands, in the order shown in the key bar.
 var commandKeys = []ui.Key{
-	{"C", "new Claude"}, {"T", "terminal"}, {"A", "add project"}, {"N", "issues"},
+	{"C", "new Claude"}, {"T", "terminal"}, {"E", "new terminal"}, {"A", "add project"}, {"N", "issues"},
 	{"S", "source control"}, {"P", "push"}, {"Y", "copy"}, {"W", "close session"}, {"U", "off PR + skip"}, {"X", "close tab"},
 	{"!", "needs you"}, {"?", "help"}, {"Q", "quit"},
 }
@@ -52,6 +53,8 @@ func (m *home) handleLeader(msg tea.KeyMsg) tea.Cmd {
 		return m.newClaudeSession()
 	case "t", "T":
 		return m.openTerminal()
+	case "e", "E":
+		return m.newTerminal()
 	case "w", "W":
 		return m.closeSession()
 	case "u", "U":
@@ -120,7 +123,7 @@ func (m *home) copySelected() tea.Cmd {
 // everydayKeys are the Ctrl+] commands shown in the key bar; the rest are
 // in help (Ctrl+] ?) and appear in the bar once Ctrl+] is pressed.
 var everydayKeys = []ui.Key{
-	{"C", "new Claude"}, {"T", "terminal"}, {"N", "issues"}, {"S", "source control"},
+	{"C", "new Claude"}, {"T", "terminal"}, {"E", "new terminal"}, {"N", "issues"}, {"S", "source control"},
 	{"←→", "project"}, {"?", "all keys"},
 }
 
@@ -163,6 +166,9 @@ func (m *home) keyBar(width int) string {
 			keys = append([]ui.Key{{"I", "type into the selected tile"}}, everydayKeys...)
 		}
 	}
+	if !m.leader && !m.appConfig.MouseOff && m.mouseSilent() {
+		now = []ui.Key{{"⌘R", "clicks do nothing? turn on Terminal's mouse reporting"}}
+	}
 	return ui.KeyBar(state, now, lead, keys, width)
 }
 
@@ -204,4 +210,12 @@ func (m *home) leaderMenu() string {
 	}
 	rows = append(rows, "", leaderDimStyle.Render("press a key · esc cancels"))
 	return leaderBoxStyle.Render(strings.Join(rows, "\n"))
+}
+
+// mouseSilent reports that the terminal has sent no mouse event since cs
+// started a while ago: Terminal's View › Allow Mouse Reporting (⌘R) is off,
+// so clicks select text in Terminal instead of reaching cs. It went off once
+// for hours unnoticed; tiles and images looked broken.
+func (m *home) mouseSilent() bool {
+	return m.lastMouse.IsZero() && time.Since(m.startedAt) > 2*time.Minute
 }

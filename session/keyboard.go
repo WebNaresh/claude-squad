@@ -84,7 +84,7 @@ func RepairClaudeKeyboards() []string {
 // foregroundCommands maps a tty name ("ttys012") to the command line of its
 // foreground process.
 func foregroundCommands() map[string]string {
-	out, err := exec.Command("ps", "-A", "-o", "pid=,tpgid=,tty=,args=").Output()
+	out, err := ProcOutput("ps", "-A", "-o", "pid=,tpgid=,tty=,args=")
 	if err != nil {
 		return nil
 	}

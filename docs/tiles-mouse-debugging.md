@@ -12,6 +12,9 @@ Each section is a bug the user actually hit.
 - So cs does selection itself (`app/selection.go`): a drag inside a tile
   highlights text in that tile only and copies it on release. A press with no
   drag is a click: focus, open an image (`gallery.go`) or a path (`openpath.go`).
+- The copy undoes Claude's wrapping (`joinWrapped`): a row filled to the pane's
+  edge, or whose next row's first word could not have fit, is joined to the next;
+  bullets, ⏺/⎿/❯ rows and box/table rows stay separate; the shared indent is dropped.
 - The key bar shows `drag  select + copy` while typing, and help (`⌃Space ?`) lists it.
 - **Rule:** any new mouse feature must keep drag-select, click and wheel working.
   Check all three (list below) before saying it's done.

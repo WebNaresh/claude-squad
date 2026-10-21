@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -119,7 +118,7 @@ func AgentModel(sessionID string, pid int) string {
 		a, ok := modelArgCache[pid]
 		modelArgMu.Unlock()
 		if !ok {
-			out, _ := exec.Command("ps", "-o", "args=", "-p", strconv.Itoa(pid)).Output()
+			out, _ := ProcOutput("ps", "-o", "args=", "-p", strconv.Itoa(pid))
 			if m := modelArgRe.FindStringSubmatch(string(out)); m != nil {
 				a = m[1]
 			}

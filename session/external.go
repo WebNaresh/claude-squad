@@ -354,15 +354,32 @@ func EnsureProjectShell(dir string, width, height int, busy func(name string) bo
 		}
 		name = base + "-" + strconv.Itoa(i)
 	}
+	return name, startShell(name, dir, width, height)
+}
+
+// NewProjectShell always starts a fresh login shell in dir, under the first
+// free csterm_<folder>, -2, -3, ... name, for a second terminal next to a
+// busy one (a dev server in the dock).
+func NewProjectShell(dir string, width, height int) (string, error) {
+	base := TermPrefix + sessionNameRe.ReplaceAllString(filepath.Base(dir), "-")
+	name := base
+	for i := 2; exec.Command("tmux", "has-session", "-t", "="+name).Run() == nil; i++ {
+		name = base + "-" + strconv.Itoa(i)
+	}
+	return name, startShell(name, dir, width, height)
+}
+
+// startShell starts a detached tmux session named name running a login shell in dir.
+func startShell(name, dir string, width, height int) error {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/zsh"
 	}
 	if out, err := exec.Command("tmux", "new-session", "-d", "-s", name, "-c", dir,
 		"-x", strconv.Itoa(width), "-y", strconv.Itoa(height), shell, "-l").CombinedOutput(); err != nil {
-		return "", fmt.Errorf("could not open a terminal: %s", strings.TrimSpace(string(out)))
+		return fmt.Errorf("could not open a terminal: %s", strings.TrimSpace(string(out)))
 	}
-	return name, nil
+	return nil
 }
 
 // parentTable answers parent-pid lookups from one `ps` call, made on first use.
@@ -375,7 +392,7 @@ func (t *parentTable) of(pid int) int {
 	if !t.loaded {
 		t.loaded = true
 		t.ppid = map[int]int{}
-		if out, err := exec.Command("ps", "-axo", "pid=,ppid=").Output(); err == nil {
+		if out, err := ProcOutput("ps", "-axo", "pid=,ppid="); err == nil {
 			for _, line := range strings.Split(string(out), "\n") {
 				f := strings.Fields(line)
 				if len(f) == 2 {
@@ -901,7 +918,7 @@ func EndEditorWait(name string) bool {
 	if pane <= 1 {
 		return false
 	}
-	ps, err := exec.Command("ps", "-axo", "pid=,ppid=,args=").Output()
+	ps, err := ProcOutput("ps", "-axo", "pid=,ppid=,args=")
 	if err != nil {
 		return false
 	}

@@ -32,7 +32,10 @@ var (
 
 type serversTickMsg struct{}
 
-type serversMsg struct{ servers []session.Server }
+type serversMsg struct {
+	servers []session.Server
+	err     error // the listing timed out: keep the last list
+}
 
 func serversTick(d time.Duration) tea.Cmd {
 	return func() tea.Msg {
@@ -44,14 +47,19 @@ func serversTick(d time.Duration) tea.Cmd {
 // refreshServers lists the listening ports off the UI thread.
 func refreshServers() tea.Cmd {
 	return func() tea.Msg {
-		list, _ := session.ListServers()
-		return serversMsg{servers: list}
+		list, err := session.ListServers()
+		return serversMsg{servers: list, err: err}
 	}
 }
 
 // applyServers stores the list and resizes the left column if the number of
 // rows shown changed.
 func (m *home) applyServers(msg serversMsg) tea.Cmd {
+	if msg.err != nil {
+		// lsof timed out: keep the last list rather than show every server gone.
+		logEvent("servers: list failed, keeping the last one: %v", msg.err)
+		return nil
+	}
 	before := m.serversHeight()
 	m.servers = msg.servers
 	if m.serversHeight() != before {
@@ -195,8 +203,8 @@ func (m *home) stopServer(s session.Server) tea.Cmd {
 		return fmt.Errorf("stopping :%d (%s)", s.Port, owner)
 	}, func() tea.Msg {
 		time.Sleep(time.Second)
-		list, _ := session.ListServers()
-		return serversMsg{servers: list}
+		list, err := session.ListServers()
+		return serversMsg{servers: list, err: err}
 	})
 }
 

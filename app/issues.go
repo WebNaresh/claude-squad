@@ -251,8 +251,12 @@ func (m *home) handleIssuePickerKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	if msg.String() == "r" {
 		// Reload the list now (a load can take a while on a big repo). The
-		// ticks and the cursor stay. Pressed again it just loads again: a
-		// slow or hung load must never lock r out.
+		// ticks and the cursor stay. Pressed during a load it waits for that
+		// one (8 at once made every load slower); after 30s it starts another,
+		// so a hung load never locks r out.
+		if d := p.RefreshingFor(); d > 0 && d < 30*time.Second {
+			return nil // one already running: a second gh load only slows both
+		}
 		p.StartRefresh()
 		logEvent("issue picker: refresh %s", filepath.Base(p.Project))
 		return loadIssues(p.Project)

@@ -208,10 +208,19 @@ func resumeAfterLimit(sessions []*session.ExternalSession, done map[string]bool,
 			due(at.Add(limitMargin))
 			continue
 		}
-		if !promptEmpty(e.Live) {
+		key := e.Name + "|" + at.Format(time.RFC3339) // once per limit, tomorrow's too
+		// Text left in the prompt: the start of "continue" (typed while the
+		// limit was on, #2568's "co") is finished; anything else is someone's
+		// draft and is left alone.
+		typed, hasPrompt := promptText(e.Live)
+		rest, isContinue := continueRest(typed)
+		if !hasPrompt || !isContinue {
+			if hasPrompt && !done[key+"|draft"] {
+				done[key+"|draft"] = true
+				logEvent("daemon: %s: usage limit reset (%s), not continued: unsent text in its prompt", e.Name, at.Format("15:04"))
+			}
 			continue
 		}
-		key := e.Name + "|" + at.Format(time.RFC3339) // once per limit, tomorrow's too
 		if done[key] {
 			// Typed, but the limit line is still the last thing: it went in
 			// before the server's reset and Claude refused it. Once more.
@@ -225,8 +234,18 @@ func resumeAfterLimit(sessions []*session.ExternalSession, done map[string]bool,
 			continue
 		}
 		done[key] = true
-		_ = session.PressKeys(e.Live, "continue")
+		_ = session.PressKeys(e.Live, rest)
 		logEvent("daemon: %s: usage limit reset (%s), typed continue", e.Name, at.Format("15:04"))
 	}
 	return next
+}
+
+// continueRest returns what to type to send "continue" when typed is already
+// in the prompt: all of it for an empty prompt, the remaining letters when
+// typed is its start ("co" → "ntinue"); ok=false for any other text.
+func continueRest(typed string) (string, bool) {
+	if strings.HasPrefix("continue", strings.ToLower(typed)) {
+		return "continue"[len(typed):], true
+	}
+	return "", false
 }
