@@ -170,6 +170,10 @@ func (m *home) renderProgress(width int) string {
 					parts[len(parts)-1] += progLabel.Render("  ") + lipgloss.NewStyle().Foreground(c).Bold(true).Render(text)
 				}
 			}
+		} else if e := m.bar.prs[project]; e.ok && e.pr.Number > 0 && (e.pr.State == "" || e.pr.State == "OPEN") {
+			// The branch's PR closes no issue (gai pr from dev with no "Closes #N"),
+			// so no issue maps to it: still show it instead of "no open PR yet".
+			parts = append(parts, progLabel.Render(fmt.Sprintf("PR #%d ", e.pr.Number))+progLabel.Render("open"))
 		} else {
 			parts = append(parts, progLabel.Render("no open PR yet"))
 		}
