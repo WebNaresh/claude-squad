@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"claude-squad/session"
 )
@@ -102,5 +103,37 @@ func TestPickerRefreshShowsResult(t *testing.T) {
 	p.SetIssues([]session.Issue{{Number: 1}, {Number: 2}, {Number: 3}, {Number: 4}}, map[int]bool{}, nil)
 	if v := p.Render(); !strings.Contains(v, "4 listed, 1 new") {
 		t.Fatalf("one added: want \"4 open, 1 new\", got:\n%s", v)
+	}
+}
+
+// A follow-up waiting for another issue to merge is listed, dimmed and
+// labelled, but never ticked by default (glitchgrab #627/#628).
+func TestPickerFollowUpNotTicked(t *testing.T) {
+	p := NewIssuePicker("/p", "p")
+	p.SetIssues([]session.Issue{
+		{Number: 1},
+		{Number: 2, Title: "[Follow-up] Update guides after #1 deploys", WaitsFor: 1},
+		{Number: 3},
+	}, map[int]bool{}, nil)
+	if p.selected[2] || !p.selected[1] || !p.selected[3] {
+		t.Fatalf("ticked %v, want 1 and 3 (not the waiting follow-up)", ticked(p))
+	}
+	p.SetSize(120, 30)
+	if out := p.Render(); !strings.Contains(out, "(waits for #1 to merge)") {
+		t.Fatalf("picker doesn't say the follow-up waits:\n%s", out)
+	}
+}
+
+// A follow-up due on a later date isn't ticked and says when it's due.
+func TestPickerDatedFollowUpNotTicked(t *testing.T) {
+	due := time.Date(2099, 11, 4, 0, 0, 0, 0, time.Local)
+	p := NewIssuePicker("/p", "p")
+	p.SetIssues([]session.Issue{{Number: 1}, {Number: 2, Title: "[Follow-up] 2099-11-04: check", NotBefore: due}}, map[int]bool{}, nil)
+	if p.selected[2] || !p.selected[1] {
+		t.Fatalf("ticked %v, want only 1", ticked(p))
+	}
+	p.SetSize(120, 30)
+	if out := p.Render(); !strings.Contains(out, "(waits until 4 Nov 00:00)") {
+		t.Fatalf("picker doesn't say when it's due:\n%s", out)
 	}
 }
