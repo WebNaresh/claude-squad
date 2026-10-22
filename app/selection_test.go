@@ -101,3 +101,23 @@ func TestSelectedTextDropsIndentWhenDragStartsAtText(t *testing.T) {
 		t.Errorf("got %q\nwant %q", got, want)
 	}
 }
+
+// A reply Claude drafted as a quote ("> " markdown, drawn with "▎" on every
+// row) pasted into WhatsApp with a bar on each line, mid-sentence where a
+// row wrapped, and a line break where a word moved down. Bars go, wrapped
+// rows join, blank quote rows stay paragraph breaks.
+func TestSelectedTextDropsQuoteBars(t *testing.T) {
+	m := &home{lastView: tileView(
+		"  ▎ Ho sir, he aahe",
+		"  ▎ barobar.",
+		"  ▎",
+		"  ▎ Install zalyavar",
+		"  ▎ mala sanga, mi",
+		"  ▎ software deto.",
+	)}
+	m.sel = tileSelection{x0: 1, x1: 22, y0: 0, y1: 5, sx: 1, sy: 0, ex: 22, ey: 5, shown: true}
+	want := "Ho sir, he aahe barobar.\n\nInstall zalyavar mala sanga, mi software deto."
+	if got := m.selectedText(); got != want {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+}
