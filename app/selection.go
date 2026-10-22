@@ -104,12 +104,9 @@ func (m *home) selectedText() string {
 		if !ok {
 			continue
 		}
-		rows = append(rows, selRow{
-			text: strings.TrimRight(ansi.Strip(ansi.Cut(screen[y], from, to+1)), " "),
-			line: strings.TrimRight(ansi.Strip(ansi.Cut(screen[y], paneL, paneR+1)), " "),
-			end:  to >= paneR,
-			skip: paneL - from,
-		})
+		line, bar := unquote(strings.TrimRight(ansi.Strip(ansi.Cut(screen[y], paneL, paneR+1)), " "))
+		text, _ := unquote(strings.TrimRight(ansi.Strip(ansi.Cut(screen[y], from, to+1)), " "))
+		rows = append(rows, selRow{text: text, line: line, end: to >= paneR, skip: paneL - from, bar: bar})
 	}
 	return joinWrapped(rows, paneR-paneL+1)
 }
@@ -120,6 +117,24 @@ type selRow struct {
 	text, line string
 	end        bool
 	skip       int // columns of text before the pane's first column (padding); negative when the drag started inside the row
+	bar        int // columns of a quote bar unquote took out of line
+}
+
+// unquote takes the bar Claude draws in front of each row of a quote ("> "
+// in its markdown) out of a row: a reply drafted as a quote pasted into
+// WhatsApp with "▎" on every line and mid-sentence where a row wrapped.
+// It returns the row and how many columns went.
+func unquote(row string) (string, int) {
+	rest := strings.TrimLeft(row, " ")
+	after, ok := strings.CutPrefix(rest, "▎")
+	if !ok {
+		return row, 0
+	}
+	n := 1
+	if a, ok := strings.CutPrefix(after, " "); ok {
+		after, n = a, 2
+	}
+	return row[:len(row)-len(rest)] + after, n
 }
 
 // listStart matches a row that starts a new item rather than continuing the
@@ -143,17 +158,18 @@ func wraps(a, b selRow, w int) bool {
 	if boxRow.MatchString(strings.TrimLeft(a.line, " ")) || listStart.MatchString(next) {
 		return false
 	}
-	if ansi.StringWidth(a.line) >= w {
+	aw := ansi.StringWidth(a.line) + a.bar
+	if aw >= w {
 		return true
 	}
 	first, _, _ := strings.Cut(next, " ")
 	// A word longer than a whole row (b is one cut piece of it) starts on
 	// the row before when there's room, so on a row of its own it began
 	// a new line ("The local file is:" then the path).
-	if first == next && ansi.StringWidth(b.line) >= w {
+	if first == next && ansi.StringWidth(b.line)+b.bar >= w {
 		return false
 	}
-	return ansi.StringWidth(a.line)+1+ansi.StringWidth(first) > w
+	return aw+1+ansi.StringWidth(first) > w
 }
 
 // joinWrapped joins wrapped rows and drops the indent all lines share.
@@ -166,7 +182,7 @@ func joinWrapped(rows []selRow, w int) string {
 		if i > 0 && len(lines) > 0 && wraps(rows[i-1], r, w) {
 			prev := strings.TrimSpace(rows[i-1].text)
 			sep := " "
-			if ansi.StringWidth(rows[i-1].line) >= w {
+			if ansi.StringWidth(rows[i-1].line)+rows[i-1].bar >= w {
 				if last := prev[strings.LastIndex(prev, " ")+1:]; last == prev || strings.Contains(last, "/") {
 					sep = ""
 				}
