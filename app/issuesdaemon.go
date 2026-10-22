@@ -200,7 +200,7 @@ func RunIssuesDaemon() error {
 			skipped := readSkipped(p)
 			offer := 0
 			for _, is := range issues[p] {
-				if is.PR == 0 && !busy[is.Number] && !skipped[is.Number] {
+				if is.PR == 0 && !is.Waits() && !busy[is.Number] && !skipped[is.Number] {
 					offer++
 				}
 			}
@@ -263,7 +263,7 @@ func RunIssuesDaemon() error {
 				if n == 0 {
 					break
 				}
-				if is.PR > 0 || busy[is.Number] || skipped[is.Number] {
+				if is.PR > 0 || is.Waits() || busy[is.Number] || skipped[is.Number] {
 					continue
 				}
 				if _, err := session.QueueIssueSession(p, is); err != nil {

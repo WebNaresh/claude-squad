@@ -48,3 +48,40 @@ func TestRecentlyClosed(t *testing.T) {
 		t.Error("click on ↺ reopen did nothing")
 	}
 }
+
+// One click arriving as two mouse events reopened the conversation in two
+// tiles; closing one of them then hid both (they share a session ID).
+func TestReopenOnceAndCloseOne(t *testing.T) {
+	m, project := autoHome(t, 0, 0, 0)
+	e := closedEntry{Project: project, Name: "cc_p", Title: "t", SessionID: "sid-1", At: time.Now()}
+	if m.reopenClosed(e) == nil {
+		t.Fatal("first reopen did nothing")
+	}
+	if m.reopenClosed(e) != nil {
+		t.Error("second click reopened it again")
+	}
+
+	a := &session.ExternalSession{Kind: session.KindTmux, Name: "cc_p", Path: project, SessionID: "sid-1"}
+	b := &session.ExternalSession{Kind: session.KindTmux, Name: "cc_p_2", Path: project, SessionID: "sid-1"}
+	m.setExternalSessions([]*session.ExternalSession{a, b})
+	m.hideClosed(externalClosedMsg{name: "cc_p", sessionID: "sid-1"})
+	// The next refresh still lists both, plus the closed Claude exiting.
+	ghost := &session.ExternalSession{Kind: session.KindTerminal, Name: "pid-123", Path: project, SessionID: "sid-1", Pid: 123}
+	m.setExternalSessions([]*session.ExternalSession{a, b, ghost})
+	got := m.list.ExternalSessions()
+	if len(got) != 1 || got[0].Name != "cc_p_2" {
+		t.Errorf("after closing cc_p, tiles = %v, want only cc_p_2", names(got))
+	}
+	// Closed again: reopening it right away works.
+	if m.reopenClosed(e) == nil {
+		t.Error("reopen right after closing it did nothing")
+	}
+}
+
+func names(l []*session.ExternalSession) []string {
+	var out []string
+	for _, e := range l {
+		out = append(out, e.Name)
+	}
+	return out
+}

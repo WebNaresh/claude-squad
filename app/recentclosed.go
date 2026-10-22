@@ -233,8 +233,22 @@ func (m *home) handleRecentMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
 	return m.reopenClosed(list[row]), true
 }
 
+// reopenHold is how long a reopened session can't be reopened again: long
+// enough for its tile to show up and leave the Recently closed list.
+const reopenHold = 10 * time.Second
+
 // reopenClosed resumes a closed session's conversation in a new tile.
+// One click often arrives as two mouse events; the second reopened the same
+// conversation in a second tile. A session ID reopened a moment ago is
+// skipped.
 func (m *home) reopenClosed(e closedEntry) tea.Cmd {
+	if at, ok := m.reopened[e.SessionID]; ok && time.Since(at) < reopenHold {
+		return nil
+	}
+	if m.reopened == nil {
+		m.reopened = map[string]time.Time{}
+	}
+	m.reopened[e.SessionID] = time.Now()
 	program := m.program
 	logEvent("reopening %s (%s)", e.Name, e.SessionID)
 	return func() tea.Msg {

@@ -159,7 +159,7 @@ func (p *IssuePicker) tickFirst(limit int) {
 		if len(p.selected) == limit {
 			break
 		}
-		if !p.busy[is.Number] && !p.skipped[is.Number] {
+		if !p.busy[is.Number] && !p.skipped[is.Number] && !is.Waits() {
 			p.selected[is.Number] = true
 		}
 	}
@@ -340,13 +340,15 @@ func (p *IssuePicker) Render() string {
 			title = "(has a session) " + title
 		case p.skipped[is.Number]:
 			title = "(skipped) " + title
+		case is.Waits():
+			title = "(" + is.WaitReason() + ") " + title
 		case is.QAFailed:
 			title = "(failed testing, again) " + title
 		}
 		line := fmt.Sprintf("%s #%-5d %s", box, is.Number, title)
 		line = runewidth.Truncate(line, w-8, "…")
 		line += strings.Repeat(" ", max(1, w-4-runewidth.StringWidth(line)-len(age))) + age
-		if p.busy[is.Number] || p.skipped[is.Number] {
+		if p.busy[is.Number] || p.skipped[is.Number] || is.Waits() {
 			line = ipDimStyle.Render(line)
 		} else {
 			line = strings.TrimSuffix(line, age) + ipDimStyle.Render(age)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -32,6 +33,29 @@ type Issue struct {
 	// on, or the issue reopened, after that merge). It is free again: PR
 	// stays 0 until a new PR takes it.
 	QAFailed bool `json:"-"`
+	// WaitsFor: a "[Follow-up] … after #N deploys" issue whose #N (issue or
+	// PR) is still open. Its work can only happen once #N ships, so it is
+	// not started until then (glitchgrab #627/#628 were run in #625's own
+	// batch and closed with its PR, before anything was deployed).
+	WaitsFor int `json:"-"`
+	// NotBefore: a follow-up due on a later date ("Not before: 2026-10-23
+	// 13:47 IST" in its body, or "[Follow-up] 2026-11-04: …" in its title).
+	// Sessions don't live that long; cs starts it once the time comes.
+	NotBefore time.Time `json:"-"`
+}
+
+// Waits reports whether the issue can't be worked on yet: a follow-up whose
+// issue or PR isn't merged, or whose date hasn't come.
+func (is Issue) Waits() bool {
+	return is.WaitsFor > 0 || time.Now().Before(is.NotBefore)
+}
+
+// WaitReason says what a waiting issue waits for, for the picker.
+func (is Issue) WaitReason() string {
+	if is.WaitsFor > 0 {
+		return fmt.Sprintf("waits for #%d to merge", is.WaitsFor)
+	}
+	return "waits until " + is.NotBefore.Local().Format("2 Jan 15:04")
 }
 
 // issueListLimit caps the open issues cs reads. It was 100: practice-stack
@@ -52,7 +76,8 @@ const qaFailedLabel = "qa:failed"
 // already closes it, if any.
 func ListOpenIssues(dir string) ([]Issue, error) {
 	prs := make(chan map[int]prRef, 1)
-	go func() { prs <- openPRIssues(dir) }()
+	openPRs := make(chan map[int]bool, 1)
+	go func() { m, open := openPRIssues(dir); prs <- m; openPRs <- open }()
 	cmd := exec.Command("gh", "issue", "list", "--state", "open", "--limit", issueListLimit,
 		"--json", "number,title,url,body,createdAt")
 	cmd.Dir = dir
@@ -67,7 +92,11 @@ func ListOpenIssues(dir string) ([]Issue, error) {
 	if err := json.Unmarshal(out, &issues); err != nil {
 		return nil, fmt.Errorf("gh issue list: %w", err)
 	}
-	inPR := <-prs
+	inPR, prOpen := <-prs, <-openPRs
+	issueOpen := map[int]bool{}
+	for _, is := range issues {
+		issueOpen[is.Number] = true
+	}
 	// One gh call per issue with a merged PR. Run one after another they
 	// made a refresh take 8–25s (r looked stuck on "refreshing…").
 	failed := make([]bool, len(issues))
@@ -88,6 +117,13 @@ func ListOpenIssues(dir string) ([]Issue, error) {
 	for i := range issues {
 		// Some titles are pasted with line breaks; one line keeps the list readable.
 		issues[i].Title = strings.Join(strings.Fields(issues[i].Title), " ")
+		issues[i].NotBefore = dueDate(issues[i].Title, issues[i].Body)
+		for _, n := range followUpOf(issues[i].Title) {
+			if issueOpen[n] || prOpen[n] {
+				issues[i].WaitsFor = n
+				break
+			}
+		}
 		ref := inPR[issues[i].Number]
 		// Failed testing after its PR merged: back in the queue, unless a
 		// newer PR already took it again.
@@ -99,6 +135,71 @@ func ListOpenIssues(dir string) ([]Issue, error) {
 	}
 	sort.Slice(issues, func(i, j int) bool { return issues[i].CreatedAt.Before(issues[j].CreatedAt) })
 	return issues, nil
+}
+
+// followUpRe matches a follow-up issue's title: "[Follow-up] <what> after
+// #<issue> deploys" (the title the global rules give it).
+var (
+	followUpRe = regexp.MustCompile(`(?i)^\[follow-?up\].*?\bafter\s+(?:pr\s+)?(#\d+(?:\s*(?:,|and|&)\s*#\d+)*)`)
+	issueRefRe = regexp.MustCompile(`#(\d+)`)
+)
+
+// followUpOf returns the issue or PR numbers a follow-up issue waits for, or
+// nil when title isn't a follow-up. Only the numbers right after "after"
+// count: "(from #2651)" later in the title names the parent, not a wait.
+func followUpOf(title string) []int {
+	m := followUpRe.FindStringSubmatch(title)
+	if m == nil {
+		return nil
+	}
+	var out []int
+	for _, r := range issueRefRe.FindAllStringSubmatch(m[1], -1) {
+		if n, err := strconv.Atoi(r[1]); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+var (
+	notBeforeRe = regexp.MustCompile(`(?im)^[\s*_>-]*not before[*_]*\s*:[*_]*\s*(.+?)[*_\s]*$`)
+	titleDateRe = regexp.MustCompile(`\b(\d{4}-\d{2}-\d{2})\b`)
+)
+
+// dueDate is when a dated follow-up may start: the body's "Not before:" line
+// (date, optional time, optional zone or IST), else a date in a follow-up's
+// title (that day, 00:00 local). Zero when there's none.
+func dueDate(title, body string) time.Time {
+	if m := notBeforeRe.FindStringSubmatch(body); m != nil {
+		if t, ok := parseDue(m[1]); ok {
+			return t
+		}
+	}
+	if strings.HasPrefix(strings.ToLower(title), "[follow") {
+		if m := titleDateRe.FindStringSubmatch(title); m != nil {
+			if t, ok := parseDue(m[1]); ok {
+				return t
+			}
+		}
+	}
+	return time.Time{}
+}
+
+func parseDue(v string) (time.Time, bool) {
+	v = strings.TrimSpace(v)
+	loc := time.Local
+	if u := strings.ToUpper(v); strings.HasSuffix(u, " IST") {
+		if l, err := time.LoadLocation("Asia/Kolkata"); err == nil {
+			loc = l
+		}
+		v = strings.TrimSpace(v[:len(v)-4])
+	}
+	for _, f := range []string{time.RFC3339, "2006-01-02 15:04 Z07:00", "2006-01-02 15:04 -0700", "2006-01-02T15:04", "2006-01-02 15:04", "2006-01-02"} {
+		if t, err := time.ParseInLocation(f, v, loc); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // prRef is the open PR closing an issue and whether a bot opened it.
@@ -130,8 +231,9 @@ func qaFailedAfter(dir string, number int, mergedAt time.Time) bool {
 // openPRIssues maps each issue an open PR closes to that PR. On error it is
 // empty: then no issue is treated as taken. PRs opened by bots (the GitHub
 // Claude app's own fix PRs) are marked: their issues are taken, but cs must
-// never gather issues on them (it once attached 14 to one).
-func openPRIssues(dir string) map[int]prRef {
+// never gather issues on them (it once attached 14 to one). It also returns
+// the numbers of the open PRs.
+func openPRIssues(dir string) (map[int]prRef, map[int]bool) {
 	// Merged and open lists load at the same time; merged ones go in first,
 	// so an open PR closing the same issue wins below. An issue a merged PR
 	// lists but that is still open (reopened, or GitHub didn't close it) was
@@ -142,7 +244,10 @@ func openPRIssues(dir string) map[int]prRef {
 	go func() { defer wg.Done(); merged = mergedPRs(dir) }()
 	go func() { defer wg.Done(); open, _ = listPRs(dir, "open", prListLimit["open"]) }()
 	wg.Wait()
-	m := map[int]prRef{}
+	m, openNums := map[int]prRef{}, map[int]bool{}
+	for _, pr := range open {
+		openNums[pr.number] = true
+	}
 	for _, prs := range [][]prInfo{merged, open} {
 		for _, pr := range prs {
 			for _, is := range pr.closes {
@@ -154,7 +259,7 @@ func openPRIssues(dir string) map[int]prRef {
 			}
 		}
 	}
-	return m
+	return m, openNums
 }
 
 // prInfo is one PR from gh pr list.

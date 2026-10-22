@@ -101,6 +101,33 @@ type externalClosedMsg struct {
 // can't bring its tile back.
 const justClosedFor = 20 * time.Second
 
+// hideClosed keeps a just-closed tile out of the list for justClosedFor.
+// Another tile with the same conversation stays: hiding by session ID too
+// closed both tiles on screen.
+func (m *home) hideClosed(msg externalClosedMsg) {
+	if m.justClosed == nil {
+		m.justClosed = map[string]time.Time{}
+	}
+	delete(m.reopened, msg.sessionID) // closed again: it may be reopened at once
+	sid := msg.sessionID
+	for _, e := range m.list.ExternalSessions() {
+		if sid != "" && e.Name != msg.name && e.SessionID == sid {
+			// Only the closed Claude, still exiting, listed on its own
+			// ("pid-123", view only) is hidden.
+			m.justClosed[ghostKey(sid)] = time.Now()
+			sid = ""
+		}
+	}
+	for _, k := range closedKeys(msg.name, sid, msg.pid) {
+		m.justClosed[k] = time.Now()
+	}
+	m.setExternalSessions(m.list.ExternalSessions())
+}
+
+// ghostKey hides a closed Claude still exiting, by session ID, while another
+// tile has the same conversation.
+func ghostKey(sessionID string) string { return "ghost:" + sessionID }
+
 // closedKeys are the keys a closed session is hidden by.
 func closedKeys(name, sessionID string, pid int) []string {
 	keys := []string{name}

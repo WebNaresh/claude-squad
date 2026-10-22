@@ -173,7 +173,7 @@ func (m *home) autoCheck() tea.Cmd {
 		}
 		offer := 0
 		for _, is := range issues {
-			if is.PR == 0 && !busy[is.Number] && !skipped[is.Number] {
+			if is.PR == 0 && !is.Waits() && !busy[is.Number] && !skipped[is.Number] {
 				offer++
 			}
 		}
