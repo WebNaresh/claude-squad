@@ -287,6 +287,11 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Fix:** `r` in the issue picker reloads the list now. Ticks and cursor stay, the footer starts with "⟳ refreshing…", and pressing `r` again just loads again, so a hung load never locks it out. `r` sits right after `x skip` in the key row, because the row is cut at the right on a narrow window. Files: `ui/issuepicker.go`, `app/issues.go`.
 - **Guard:** `TestPickerRefreshKeepsListAndCursor`.
 
+### Strip said "no open PR yet" with a PR open (2026-10-15)
+- **Saw:** seva_stack PR #555 (`gai pr` from `dev`) was open, but the strip read "no open PR yet · 15 open".
+- **Cause:** the strip finds the open PR only through the issues it closes (`closingIssuesReferences`). #555's body had no `Closes #N`, so no issue mapped to it.
+- **Fix:** with no issue-mapped PR, the strip shows the checked-out branch's open PR ("PR #N open"). File: `app/progress.go`. It does not count issues toward the 15-per-PR room; that still needs a `Closes #N` in the PR body (gai side).
+
 ### Could not open a second terminal while a dev server ran in the dock (2026-10-16)
 - **Saw:** the dock terminal ran `turbo dev` (glitchgrab); ⌃Space T only shows/hides that same dock, so there was no shell left for git or a second command.
 - **Fix:** ⌃Space E opens a fresh shell in the project folder (`csterm_<folder>-2`, -3, …) as a grid tile and types into it; the dock keeps running. On the key bar and in help. Files: `session/external.go` (`NewProjectShell`), `app/terminal.go` (`newTerminal`), `app/leader.go`, `app/help.go`.
