@@ -15,6 +15,10 @@ import (
 
 const scRefreshInterval = 2 * time.Second
 
+// scLoadingStale is how long a git read may stay unanswered before it counts
+// as lost and is started again, so a dropped command can't freeze a tab.
+const scLoadingStale = 30 * time.Second
+
 type scStatusMsg struct {
 	root       string
 	branch     string
@@ -37,10 +41,13 @@ func scTick() tea.Cmd {
 // thread; at most one read runs at a time.
 func (m *home) refreshSourceControl() tea.Cmd {
 	root := m.projectTabs.Active()
-	if root == "" || m.scLoading[root] {
+	if root == "" {
 		return nil
 	}
-	m.scLoading[root] = true
+	if since, ok := m.scLoading[root]; ok && time.Since(since) < scLoadingStale {
+		return nil
+	}
+	m.scLoading[root] = time.Now()
 	return func() tea.Msg {
 		started := time.Now()
 		files, err := git.Status(root)
