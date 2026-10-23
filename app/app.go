@@ -267,10 +267,10 @@ type home struct {
 	// fitted remembers which live screens were already sized to the pane
 	fitted map[string]string
 	// sourceControl is the left column. scLoading marks projects whose git
-	// status is being read; scCache keeps each project's last status so
+	// status is being read, and since when; scCache keeps each project's last status so
 	// switching tabs shows it at once instead of an empty list.
 	sourceControl *ui.SourceControl
-	scLoading     map[string]bool
+	scLoading     map[string]time.Time
 	scCache       map[string]scStatusMsg
 	bar           statusBar            // branch, push and PR at the right of the bottom row
 	tabChecksAt   map[string]time.Time // last checks read per project tab
@@ -313,7 +313,7 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 	h.progress = loadProgress()
 	h.recent = loadRecent()
 	h.sourceControl = ui.NewSourceControl()
-	h.scLoading = map[string]bool{}
+	h.scLoading = map[string]time.Time{}
 	h.scCache = map[string]scStatusMsg{}
 	h.gridMarkdown = map[string]*ui.MarkdownCache{}
 	h.startedAt = time.Now()
@@ -1619,6 +1619,9 @@ func (m *home) refreshTabs(active string) {
 	if active != "" && m.projectTabs.Active() != active {
 		// The active tab was a temporary one whose sessions ended.
 		_ = m.switchProject(m.projectTabs.Active())
+		// That switch's git read was dropped with its command; unmark it, or
+		// the tab's ↑/↓ and files stay frozen (the 2s tick skips a loading tab).
+		delete(m.scLoading, m.projectTabs.Active())
 	}
 }
 
