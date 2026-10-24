@@ -42,16 +42,26 @@ type Issue struct {
 	// 13:47 IST" in its body, or "[Follow-up] 2026-11-04: …" in its title).
 	// Sessions don't live that long; cs starts it once the time comes.
 	NotBefore time.Time `json:"-"`
+	// Video: a video request (label gg:video), e.g. a demo script a tester
+	// wrote. An editor makes it in GlitchRecord; it is never code to fix, so
+	// cs never starts a session on it (glitchgrab #642 was triaged a feature).
+	Video  bool `json:"-"`
+	Labels []struct {
+		Name string `json:"name"`
+	} `json:"labels"`
 }
 
 // Waits reports whether the issue can't be worked on yet: a follow-up whose
 // issue or PR isn't merged, or whose date hasn't come.
 func (is Issue) Waits() bool {
-	return is.WaitsFor > 0 || time.Now().Before(is.NotBefore)
+	return is.Video || is.WaitsFor > 0 || time.Now().Before(is.NotBefore)
 }
 
 // WaitReason says what a waiting issue waits for, for the picker.
 func (is Issue) WaitReason() string {
+	if is.Video {
+		return "video request, made in GlitchRecord"
+	}
 	if is.WaitsFor > 0 {
 		return fmt.Sprintf("waits for #%d to merge", is.WaitsFor)
 	}
@@ -71,6 +81,19 @@ var prListLimit = map[string]string{"merged": "300", "open": "100"}
 // qaFailedLabel is what testers put on an issue whose fix failed testing.
 const qaFailedLabel = "qa:failed"
 
+// videoLabel marks a video request (Glitchgrab's report triage puts it on).
+const videoLabel = "gg:video"
+
+// isVideoRequest reports whether the issue carries videoLabel.
+func isVideoRequest(is Issue) bool {
+	for _, l := range is.Labels {
+		if l.Name == videoLabel {
+			return true
+		}
+	}
+	return false
+}
+
 // ListOpenIssues returns the open issues of the GitHub repo in dir, oldest
 // first (the order they should be worked on), each with the open PR that
 // already closes it, if any.
@@ -79,7 +102,7 @@ func ListOpenIssues(dir string) ([]Issue, error) {
 	openPRs := make(chan map[int]bool, 1)
 	go func() { m, open := openPRIssues(dir); prs <- m; openPRs <- open }()
 	cmd := exec.Command("gh", "issue", "list", "--state", "open", "--limit", issueListLimit,
-		"--json", "number,title,url,body,createdAt")
+		"--json", "number,title,url,body,createdAt,labels")
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
@@ -118,6 +141,7 @@ func ListOpenIssues(dir string) ([]Issue, error) {
 		// Some titles are pasted with line breaks; one line keeps the list readable.
 		issues[i].Title = strings.Join(strings.Fields(issues[i].Title), " ")
 		issues[i].NotBefore = dueDate(issues[i].Title, issues[i].Body)
+		issues[i].Video = isVideoRequest(issues[i])
 		for _, n := range followUpOf(issues[i].Title) {
 			if issueOpen[n] || prOpen[n] {
 				issues[i].WaitsFor = n
