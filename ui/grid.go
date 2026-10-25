@@ -37,6 +37,9 @@ type GridTile struct {
 	// Model is the Claude model the session runs ("sonnet", "opus[1m]"),
 	// shown as a small tag before the status.
 	Model string
+	// Age is how long the session has been running ("12m", "1h 5m"), shown
+	// as a small tag before the model. Empty: unknown.
+	Age string
 }
 
 // Smallest useful tile (columns × rows, border included); the grid fits as
@@ -175,6 +178,11 @@ func RenderTile(t GridTile, focused bool, w, h int) string {
 	}
 	if t.Model != "" && !t.Ghost {
 		status = modelTag(t.Model) + status
+	}
+	if age := gridStatusStyle.Render(" ⏱ "+t.Age) + " "; t.Age != "" && !t.Ghost &&
+		lipgloss.Width(age+status) <= w-16 {
+		// Only when it leaves room for the name; a narrow tile drops it first.
+		status = age + status
 	}
 	if focused && !t.Ghost {
 		// Said in words on the right too, where the name tag can't be cut.
