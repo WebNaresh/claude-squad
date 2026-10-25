@@ -226,7 +226,7 @@ func (m *home) applyGridCapture(msg gridCapturedMsg) {
 // not touch the model.
 func captureTile(j gridJob, w, h int) ui.GridTile {
 	if inst := j.row.Instance; inst != nil {
-		t := ui.GridTile{Title: inst.Title, NeedsYou: inst.NeedsYou, Status: "agent"}
+		t := ui.GridTile{Title: inst.Title, NeedsYou: inst.NeedsYou, Status: "agent", Age: runAge(inst.CreatedAt)}
 		if !inst.Started() || inst.Paused() {
 			t.Status, t.Content = "paused", "Paused. Select it and press r to resume."
 			return t
@@ -240,7 +240,7 @@ func captureTile(j gridJob, w, h int) ui.GridTile {
 	}
 	e := j.row.External
 	t := ui.GridTile{Title: e.Title(), NeedsYou: e.NeedsYou(), Status: e.Status, Stage: session.StagePhase(e.SessionID),
-		Model: session.AgentModel(e.SessionID, e.Pid)}
+		Model: session.AgentModel(e.SessionID, e.Pid), Age: runAge(session.SessionStartedAt(e.SessionID, e.Pid))}
 	if j.dup {
 		t.Stage = "⚠ same conversation open in 2 tiles · close one"
 	}
@@ -576,4 +576,22 @@ func (m *home) cachedTiles(rows []gridEntry) []ui.GridTile {
 		}
 	}
 	return tiles
+}
+
+// runAge is how long a session has run, for its tile's "⏱" tag: "<1m",
+// "12m", "1h 5m", "2d 3h". Empty when the start is unknown.
+func runAge(start time.Time) string {
+	if start.IsZero() {
+		return ""
+	}
+	d := time.Since(start)
+	switch {
+	case d < time.Minute:
+		return "<1m"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+	return fmt.Sprintf("%dd %dh", int(d.Hours()/24), int(d.Hours())%24)
 }
