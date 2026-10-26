@@ -9,12 +9,16 @@ import (
 // A "[Follow-up] … after #N deploys" issue names what it waits for; other
 // titles wait for nothing (glitchgrab #627/#628 ran in #625's batch).
 func TestFollowUpOf(t *testing.T) {
-	for title, want := range map[string][]int{
-		"[Follow-up] Update MCP + demo booking guides after #620 deploys":             {620},
-		"[Follow-up] Confirm the bot knocks on /meet/<code> calls after #625 deploys": {625},
-		"[followup] Re-check after #12 and #13 deploy":                                {12, 13},
+	for title, want := range map[string][]followRef{
+		"[Follow-up] Update MCP + demo booking guides after #620 deploys":             {{"", 620}},
+		"[Follow-up] Confirm the bot knocks on /meet/<code> calls after #625 deploys": {{"", 625}},
+		"[followup] Re-check after #12 and #13 deploy":                                {{"", 12}, {"", 13}},
 		"Fix #620 crash after login":                                                  nil,
 		"[Follow-up] Write the guide":                                                 nil,
+		// abhyasika #1028: the wait was in another repo and went unseen.
+		"[Follow-up] Show Glitchgrab's auto-booked next call and its reason after glitchgrab#670 deploys": {{"glitchgrab", 670}},
+		"[Follow-up] x after PR#7 deploys":                  {{"", 7}},
+		"[Follow-up] x after Owner/repo.js#5 and #6 deploy": {{"Owner/repo.js", 5}, {"", 6}},
 	} {
 		if got := followUpOf(title); !slices.Equal(got, want) {
 			t.Errorf("followUpOf(%q) = %v, want %v", title, got, want)
