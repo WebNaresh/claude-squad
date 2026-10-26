@@ -38,6 +38,10 @@ type Issue struct {
 	// not started until then (glitchgrab #627/#628 were run in #625's own
 	// batch and closed with its PR, before anything was deployed).
 	WaitsFor int `json:"-"`
+	// WaitsRepo: the repo of WaitsFor when it lives in another repo
+	// ("after glitchgrab#670 deploys"), else "". abhyasika #1028 waited on
+	// glitchgrab#670 but was started at once and put into #1026's PR.
+	WaitsRepo string `json:"-"`
 	// NotBefore: a follow-up due on a later date ("Not before: 2026-10-23
 	// 13:47 IST" in its body, or "[Follow-up] 2026-11-04: …" in its title).
 	// Sessions don't live that long; cs starts it once the time comes.
@@ -63,7 +67,7 @@ func (is Issue) WaitReason() string {
 		return "video request, made in GlitchRecord"
 	}
 	if is.WaitsFor > 0 {
-		return fmt.Sprintf("waits for #%d to merge", is.WaitsFor)
+		return fmt.Sprintf("waits for %s#%d to merge", is.WaitsRepo, is.WaitsFor)
 	}
 	return "waits until " + is.NotBefore.Local().Format("2 Jan 15:04")
 }
@@ -142,9 +146,9 @@ func ListOpenIssues(dir string) ([]Issue, error) {
 		issues[i].Title = strings.Join(strings.Fields(issues[i].Title), " ")
 		issues[i].NotBefore = dueDate(issues[i].Title, issues[i].Body)
 		issues[i].Video = isVideoRequest(issues[i])
-		for _, n := range followUpOf(issues[i].Title) {
-			if issueOpen[n] || prOpen[n] {
-				issues[i].WaitsFor = n
+		for _, r := range followUpOf(issues[i].Title) {
+			if r.repo == "" && (issueOpen[r.n] || prOpen[r.n]) || r.repo != "" && otherRepoOpen(dir, r.repo, r.n) {
+				issues[i].WaitsFor, issues[i].WaitsRepo = r.n, r.repo
 				break
 			}
 		}
@@ -162,27 +166,69 @@ func ListOpenIssues(dir string) ([]Issue, error) {
 }
 
 // followUpRe matches a follow-up issue's title: "[Follow-up] <what> after
-// #<issue> deploys" (the title the global rules give it).
+// #<issue> deploys" (the title the global rules give it). The issue may live
+// in another repo: "after glitchgrab#670" or "after owner/repo#670".
 var (
-	followUpRe = regexp.MustCompile(`(?i)^\[follow-?up\].*?\bafter\s+(?:pr\s+)?(#\d+(?:\s*(?:,|and|&)\s*#\d+)*)`)
-	issueRefRe = regexp.MustCompile(`#(\d+)`)
+	followUpRe = regexp.MustCompile(`(?i)^\[follow-?up\].*?\bafter\s+(?:pr\s+)?((?:[\w.-]+(?:/[\w.-]+)?)?#\d+(?:\s*(?:,|and|&)\s*(?:[\w.-]+(?:/[\w.-]+)?)?#\d+)*)`)
+	issueRefRe = regexp.MustCompile(`([\w.-]+(?:/[\w.-]+)?)?#(\d+)`)
 )
 
-// followUpOf returns the issue or PR numbers a follow-up issue waits for, or
-// nil when title isn't a follow-up. Only the numbers right after "after"
-// count: "(from #2651)" later in the title names the parent, not a wait.
-func followUpOf(title string) []int {
+// followRef is one issue or PR a follow-up waits for; repo is "" for this repo.
+type followRef struct {
+	repo string
+	n    int
+}
+
+// followUpOf returns the issues or PRs a follow-up issue waits for, or nil
+// when title isn't a follow-up. Only the refs right after "after" count:
+// "(from #2651)" later in the title names the parent, not a wait.
+func followUpOf(title string) []followRef {
 	m := followUpRe.FindStringSubmatch(title)
 	if m == nil {
 		return nil
 	}
-	var out []int
+	var out []followRef
 	for _, r := range issueRefRe.FindAllStringSubmatch(m[1], -1) {
-		if n, err := strconv.Atoi(r[1]); err == nil {
-			out = append(out, n)
+		if n, err := strconv.Atoi(r[2]); err == nil {
+			repo := r[1]
+			if strings.EqualFold(repo, "pr") { // "after PR#12" is this repo's PR
+				repo = ""
+			}
+			out = append(out, followRef{repo, n})
 		}
 	}
 	return out
+}
+
+// otherRepoOpen reports whether issue or PR n of repo is still open. A bare
+// repo name ("glitchgrab") is taken under dir's own GitHub owner. When it
+// can't be checked, it counts as open: starting too early is the worse miss.
+func otherRepoOpen(dir, repo string, n int) bool {
+	if !strings.Contains(repo, "/") {
+		owner := githubOwner(dir)
+		if owner == "" {
+			return true
+		}
+		repo = owner + "/" + repo
+	}
+	cmd := exec.Command("gh", "api", fmt.Sprintf("repos/%s/issues/%d", repo, n), "--jq", ".state")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	return err != nil || strings.TrimSpace(string(out)) != "closed"
+}
+
+var githubRemoteRe = regexp.MustCompile(`github\.com[:/]([^/]+)/`)
+
+// githubOwner is the owner of dir's origin remote on GitHub, or "".
+func githubOwner(dir string) string {
+	out, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return ""
+	}
+	if m := githubRemoteRe.FindStringSubmatch(string(out)); m != nil {
+		return m[1]
+	}
+	return ""
 }
 
 var (
