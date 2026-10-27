@@ -98,6 +98,12 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Fix:** when a click resolves to a folder on a "›" sent-file line, the cut text is matched against the start of the files the session sent. Several with the same start (before and after in one folder) are told apart by the line's place in the list. The image page opens on that file (`cutImageAt`, `app/mouseclick.go`).
 - **Guard:** `TestCutImageAt`; activity.log "clicked a cut-off image path".
 
+### Clicking a sent image opened a page of random images
+- **Saw (2026-10-27):** in practice-stack #2811, clicking a "› [image] /private/tmp/…" line opened "images Claude sent" with 200 images of the whole project, not the clicked one.
+- **Cause:** two gaps in path joining. The size tail was glued to the path with no space ("…-8871-70B)"), so it wasn't cut and broke the path there; and the file name had spaces ("Settings sub-menu scroll spy (#2811) … (failed).png"), which the path match stops at. The click resolved to the project's tmp folder, and a folder opens as a page of every image under it.
+- **Fix:** `sizeTailRe` also cuts a glued "B)"; after the longest existing folder, `descend` walks on into the entry whose name comes next in the text, comparing without spaces (`app/openpath.go`).
+- **Guard:** `TestPathAtGluedSizeAndSpacedName`.
+
 ### Wheel scrolling recalled Claude's prompt history / didn't scroll
 - **Saw:** the wheel typed old prompts; `claude attach` tiles didn't scroll; slow wheel notches leaked as arrow keys.
 - **Fix:** burst detection (10ms gap, 300ms sticky window); SGR wheel events to alternate-screen panes, tmux copy-mode otherwise (`app/livepane.go`).
