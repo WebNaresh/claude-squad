@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -74,6 +76,11 @@ func pathAt(lines []string, row int, dir string) string {
 				break
 			}
 		}
+		// File names with spaces ("Settings scroll spy (failed).png") stop
+		// the match at a folder: walk on into it by the names it holds.
+		if found != "" {
+			found, end = descend(found, text, end)
+		}
 		if found != "" && rowOf[end-1] >= row {
 			return found
 		}
@@ -87,12 +94,61 @@ func pathAt(lines []string, row int, dir string) string {
 	return ""
 }
 
+// descend follows text past folder p (which ends at text[:end]) into the
+// entry whose name comes next, spaces in names included, as deep as it goes.
+// Wrapping drops the space at each row break, so names are compared without
+// whitespace. Returns the deepest path and where its text ends.
+func descend(p, text string, end int) (string, int) {
+	if strings.HasSuffix(text[:end], "/") {
+		end--
+	}
+	p = filepath.Clean(p)
+	for end < len(text) && text[end] == '/' {
+		ents, err := os.ReadDir(p)
+		if err != nil {
+			break
+		}
+		best, bestEnd := "", 0
+		for _, en := range ents {
+			if n := namePrefixLen(text[end+1:], en.Name()); n > 0 && len(en.Name()) > len(best) {
+				best, bestEnd = en.Name(), end+1+n
+			}
+		}
+		if best == "" {
+			break
+		}
+		p, end = filepath.Join(p, best), bestEnd
+	}
+	return p, end
+}
+
+// namePrefixLen is how many bytes of text spell name, whitespace ignored on
+// both sides, or 0 when text doesn't start with name.
+func namePrefixLen(text, name string) int {
+	i := 0
+	for _, c := range name {
+		if unicode.IsSpace(c) {
+			continue
+		}
+		for i < len(text) && unicode.IsSpace(rune(text[i])) {
+			i++
+		}
+		n := utf8.RuneLen(c)
+		if i+n > len(text) || text[i:i+n] != string(c) {
+			return 0
+		}
+		i += n
+	}
+	return i
+}
+
 // Claude prints a sent file's size at the right edge of its wrapped path
 // ("…-practice-stack (283.9K" / "[image] /3f69…/before-booking-det B)" /
-// "ails.png"), and labels the block "[image]" or "›". Those pieces would be
+// "ails.png"), and labels the block "[image]" or "›". When the path fills its
+// column the "B)" is glued on with no space ("…-8871-70B)"). Those pieces would be
 // glued into the path when the rows are joined, so they are cut first.
 var (
-	sizeTailRe = regexp.MustCompile(`\s+(\(\d+(\.\d+)?\s*[KMGT]?B?\)?|[KMGT]?B\))$`)
+	sizeTailRe = regexp.MustCompile(`\s+\(\d+(\.\d+)?\s*[KMGT]?B?\)?$|\s*[KMGT]?B\)$`)
 	blockHead  = regexp.MustCompile(`^(\[image\]|›|⎿)\s*`)
 )
 
