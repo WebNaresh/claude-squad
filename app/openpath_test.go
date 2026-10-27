@@ -163,3 +163,45 @@ func TestCheckLabel(t *testing.T) {
 		t.Fatalf("mix: %d %d %d", p, f, n)
 	}
 }
+
+// Issue log "Clicking a sent image opened a page of random images": the size
+// tail "B)" was glued to the path ("…-8871-70B)") and the file name had
+// spaces, so the click resolved to the project's tmp folder and its 200 images.
+func TestPathAtGluedSizeAndSpacedName(t *testing.T) {
+	dir := t.TempDir()
+	shots := filepath.Join(dir, "-Users-webnaresh-coding-line-practice-stack", "bcca43fd-4896-470e-8871-70a3bbae3a6b", "scratchpad", "before", "admin.settings-scroll-spy.cy.ts")
+	if err := os.MkdirAll(shots, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(shots, "Settings sub-menu scroll spy (#2811) -- Firm a card whose heading is in the top part of the screen is the highlighted one (failed).png")
+	other := filepath.Join(shots, "Settings sub-menu scroll spy (#2811) -- other.png")
+	for _, f := range []string{file, other} {
+		if err := os.WriteFile(f, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lines := []string{
+		"  ›       " + dir + "/-Users-webnaresh-coding (469.3K",
+		"  [image] -line-practice-stack/bcca43fd-4896-470e-8871-70B)",
+		"          a3bbae3a6b/scratchpad/before/admin.settings-scr",
+		"          oll-spy.cy.ts/Settings sub-menu scroll spy",
+		"          (#2811) -- Firm a card whose heading is in the",
+		"          top part of the screen is the highlighted one",
+		"          (failed).png",
+		"  ›       " + dir + "/-Users-webnaresh-coding (415.1K",
+		"  [image] -line-practice-stack/bcca43fd-4896-470e-8871-70B)",
+		"          a3bbae3a6b/scratchpad/before/admin.settings-scr",
+		"          oll-spy.cy.ts/Settings sub-menu scroll spy",
+		"          (#2811) -- other.png",
+	}
+	for row := 0; row <= 6; row++ {
+		if got := pathAt(lines, row, ""); got != file {
+			t.Errorf("row %d: got %q, want the first image", row, got)
+		}
+	}
+	for row := 7; row < len(lines); row++ {
+		if got := pathAt(lines, row, ""); got != other {
+			t.Errorf("row %d: got %q, want the second image", row, got)
+		}
+	}
+}
