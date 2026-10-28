@@ -73,6 +73,7 @@ func RunIssuesDaemon() error {
 	saidBase := map[string]string{} // last "not starting a new batch yet" reason logged
 	limitDone := map[string]bool{}  // sessions already resumed after a usage limit
 	colored := loadColors()         // the /color cs gave each issue session ("" = the user's own)
+	comments := loadCommentState()  // GitHub comments already typed into issue tiles (issuecomments.go)
 	nextLimitCheck := time.Time{}
 	nextScan := time.Time{}
 
@@ -94,6 +95,7 @@ func RunIssuesDaemon() error {
 					nextLimitCheck = at // a reset is due before the next scan
 				}
 				colorIssueSessions(list, colored)
+				deliverIssueComments(list, comments, time.Now())
 			}
 		}
 
