@@ -45,6 +45,13 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Guard:** `TestStagePhaseKeepsLast`; hook lifecycle check (fake session through /stage → add → stop → prompt).
 - **Files:** `session/stagephase.go`, `~/.claude/hooks/session-state.sh` (shared with the team).
 
+### Issue tile text running off the right edge
+- **Saw:** an issue tile (#2866) cut every line at the right border ("Issue comment: I posted an update saying the whole fix is now i"); the rest could not be seen.
+- **Cause:** a queued issue session was fitted to its tile (65x30), then `StartIssueSession` killed it and made a new one at 200x50 under the same name. cs fits a name only once (`needsFit`), so it never resized the new one. activity.log: `resize … to 65x30 (tile)` then `half-empty tile … dropped=49` (a 50-row pane).
+- **Fix:** the replacement session takes the queued session's size (`tmux display-message -t =name:`; the trailing `:` is needed, `=name` alone prints nothing). Same hole on Recently closed → reopen (new session, same name, 200x50): cs now forgets a name's fit when its session goes away (`logSessionChanges`, `app/app.go`).
+- **Guard:** none automatic; `tmux list-panes -a -F '#{session_name} #{window_width}x#{window_height}'` shows any tile still at 200x50.
+- **Files:** `session/issues.go` (StartIssueSession), `app/app.go`.
+
 ### Issue tile stuck on "Nothing on screen yet"
 - **Saw:** queued issue tiles (#2853, #2855) never started; blank forever.
 - **Cause:** a queued issue was started with `tmux respawn-pane -k`, which failed on macOS (`fork failed: Device not configured`) after killing the queued screen, leaving a pane with no process (`pane_pid -1`). The queued flag was already cleared, so cs never retried. Respawning that pane again segfaults tmux 3.7c (`input_free` in `spawn_pane`) and kills every session: never run `respawn-pane` on a `pane_pid -1` pane; `kill-session` it.
@@ -220,6 +227,7 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Came back (same day): `/stage` couldn't upload screenshots.** The claude.ai connectors (Glitchgrab) stayed signed in to the old account, so #2307 asked how to attach its shots. `/reload-plugins` reconnects them; the runner now types it right after `/remote-control`.
 - **Came back (2026-10-13): "it continues, but a little late".** Limit "resets 6pm": continue typed at 18:00:42. A 30s safety margin plus the 15s scan made it up to 45s late. Now 5s after the reset: the runner looks again right at the reset time instead of the next scan. A continue sent before the server's reset (Claude still showing the same limit) is sent once more 90s after the reset; before, it was never retried (`limitMargin`, `limitRetryAfter`, `app/limitresume.go`; `app/issuesdaemon.go`). Guard: `TestResumeAfterLimitTiming` (live, private tmux server).
 - **Came back (2026-10-16): #2568 never continued.** Limit "resets 5:10pm": three tiles got continue at 17:10:05, #2568 didn't. At 16:57 "co" had been typed into its prompt and never sent; the runner skips any tile with text in its prompt so it never overwrites a draft. Fix: text that is the start of "continue" ("c", "co", "cont"…) is finished and sent; any other text is still left alone and logged once as "not continued: unsent text in its prompt" (`continueRest`, `promptText`, `app/limitresume.go`, `app/livepane.go`). Guard: `TestContinueRest`; live, #2568 got continue at 17:19:33 after the update.
+- **Came back (2026-10-28): nothing continued after "resets 5:30pm".** Two causes: Claude now says "You've hit your **5-hour** limit", and the regex only knew session/usage/weekly; and in a 65-column tile the notice wraps, so "5:30pm" sat on the next line and the notice line alone never matched. Fix: any "hit your <word> limit", and the notice is read joined across its wrapped lines down to "/upgrade" (`limitNotice`, `app/limitresume.go`). Guard: `TestLimitResetWrapped`; live, 11 tiles got continue at 17:33:49 right after the update.
 - **Guard:** `TestAccountSwitch`; activity.log "claude.ai account changed, typed /remote-control and /reload-plugins" and "usage limit on the old account, typed continue". First live run: 10 tiles, 3 resumed from a limit.
 
 ### Issues that failed testing never came back to the auto pickup
