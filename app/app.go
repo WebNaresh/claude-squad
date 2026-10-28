@@ -1600,6 +1600,10 @@ func (m *home) logSessionChanges(sessions []*session.ExternalSession) {
 	for name, d := range m.lastSessions {
 		if _, ok := now[name]; !ok {
 			logEvent("session gone: %s %s", name, d)
+			// Reopened later under the same name (Recently closed → reopen),
+			// it starts at 200x50; remembered as fitted, it was never sized to
+			// its tile and its lines ran off the right edge.
+			delete(m.fitted, name)
 		}
 	}
 	m.lastSessions = now
