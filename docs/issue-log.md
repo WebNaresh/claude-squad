@@ -45,6 +45,12 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Guard:** `TestStagePhaseKeepsLast`; hook lifecycle check (fake session through /stage → add → stop → prompt).
 - **Files:** `session/stagephase.go`, `~/.claude/hooks/session-state.sh` (shared with the team).
 
+### Issue tile stuck on "Nothing on screen yet"
+- **Saw:** queued issue tiles (#2853, #2855) never started; blank forever.
+- **Cause:** a queued issue was started with `tmux respawn-pane -k`, which failed on macOS (`fork failed: Device not configured`) after killing the queued screen, leaving a pane with no process (`pane_pid -1`). The queued flag was already cleared, so cs never retried. Respawning that pane again segfaults tmux 3.7c (`input_free` in `spawn_pane`) and kills every session: never run `respawn-pane` on a `pane_pid -1` pane; `kill-session` it.
+- **Fix:** `StartIssueSession` (`session/issues.go`) kills the queued session and opens a new one with `new-session`, retried 3 times.
+- **Guard:** activity.log "could not start #N … respawn pane failed" no longer possible; "could not start issue #N" means new-session failed 3 times.
+
 ### Half-empty tiles (text at the top, blank below)
 - **Causes:** inline Claude after its window grew; captured right after a resize; caught mid-redraw; a background session whose own size is smaller (not fixable from cs).
 - **Fix:** `fillFromHistory`, 150ms wait after a resize, re-capture when much emptier (`app/grid.go`). Details in `docs/tiles-mouse-debugging.md`.
