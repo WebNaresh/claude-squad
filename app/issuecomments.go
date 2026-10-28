@@ -88,18 +88,31 @@ func (s *commentState) save() {
 	}
 }
 
-// commentRelay is the bot that posts testers' and reporters' comments.
+// commentRelay is the bot that posts testers' verdicts, and also text
+// relayed from outside reporters.
 const commentRelay = "glitchgrab-app[bot]"
+
+// qaVerdict is true for a tester's verdict as Glitchgrab writes it:
+// "✅ **QA passed** — **[TESTER: name]** …" or "❌ **QA failed** — …".
+func qaVerdict(body string) bool {
+	for _, p := range []string{"✅ **QA passed** — **[TESTER:", "❌ **QA failed** — **[TESTER:"} {
+		if strings.HasPrefix(body, p) {
+			return true
+		}
+	}
+	return false
+}
 
 // skipComment is true for comments that aren't news for the working Claude,
 // or whose author isn't trusted to steer a session that runs in auto mode:
-// only the repo's owner, members and collaborators, and the Glitchgrab relay.
+// only the repo's owner, members and collaborators, and from the Glitchgrab
+// relay only testers' QA verdicts (reporters' relayed text stays on GitHub).
 func skipComment(c ghComment) bool {
 	body := strings.TrimSpace(c.Body)
 	switch c.Assoc {
 	case "OWNER", "MEMBER", "COLLABORATOR":
 	default:
-		if c.User.Login != commentRelay {
+		if c.User.Login != commentRelay || !qaVerdict(body) {
 			return true
 		}
 	}
