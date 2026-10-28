@@ -515,15 +515,25 @@ func StartIssueSession(dir string, issue Issue) (string, error) {
 		if strings.TrimSpace(string(out)) != "1" {
 			return name, nil // already running
 		}
-		_ = exec.Command("tmux", "set-option", "-u", "-t", name, queuedOption).Run()
-		if out, err := exec.Command("tmux", "respawn-pane", "-k", "-t", name, "-c", dir,
-			"gai", "issue", issue.URL).CombinedOutput(); err != nil {
-			return "", fmt.Errorf("could not start issue #%d: %s", issue.Number, strings.TrimSpace(string(out)))
-		}
-		return name, nil
+		// Replace the queued session with a new one. Not respawn-pane: on macOS
+		// it failed ("fork failed: Device not configured") and left the pane
+		// with no process, a blank tile forever; a second respawn on that pane
+		// crashed the tmux server (tmux 3.7c), killing every session.
+		_ = exec.Command("tmux", "kill-session", "-t", "="+name).Run()
 	}
-	if out, err := exec.Command("tmux", "new-session", "-d", "-s", name, "-c", dir, "-x", "200", "-y", "50",
-		"gai", "issue", issue.URL).CombinedOutput(); err != nil {
+	var out []byte
+	var err error
+	for try := 0; try < 3; try++ {
+		if try > 0 {
+			time.Sleep(500 * time.Millisecond)
+		}
+		out, err = exec.Command("tmux", "new-session", "-d", "-s", name, "-c", dir, "-x", "200", "-y", "50",
+			"gai", "issue", issue.URL).CombinedOutput()
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
 		return "", fmt.Errorf("could not start issue #%d: %s", issue.Number, strings.TrimSpace(string(out)))
 	}
 	_ = exec.Command("tmux", "set-option", "-t", name, "window-size", "latest").Run()
