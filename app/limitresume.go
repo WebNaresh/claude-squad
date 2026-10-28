@@ -28,7 +28,9 @@ const limitMargin = 5 * time.Second
 // (the first continue came before the server's reset), type continue once more.
 const limitRetryAfter = 90 * time.Second
 
-var limitRe = regexp.MustCompile(`hit your (?:session|usage|weekly) limit[^·]*·\s*resets\s+(\d{1,2})(?::(\d{2}))?\s*([ap]m)`)
+// Any kind of limit: "session", "usage", "weekly", "5-hour" (Claude's
+// wording since 2026-10; the old list missed it and no tile continued).
+var limitRe = regexp.MustCompile(`hit your [a-z0-9-]+ limit[^·]*·\s*resets\s+(\d{1,2})(?::(\d{2}))?\s*([ap]m)`)
 
 // limitReset returns when a pane's last screen says the limit resets, from
 // the latest limit line, or ok=false. A time already passed by more than
@@ -36,10 +38,11 @@ var limitRe = regexp.MustCompile(`hit your (?:session|usage|weekly) limit[^·]*�
 func limitReset(screen string, now time.Time) (time.Time, string, bool) {
 	lines := strings.Split(screen, "\n")
 	for i := len(lines) - 1; i >= 0 && i >= len(lines)-40; i-- {
-		if !isLimitNotice(lines, i) {
+		notice, ok := limitNotice(lines, i)
+		if !ok {
 			continue
 		}
-		m := limitRe.FindStringSubmatch(strings.ToLower(lines[i]))
+		m := limitRe.FindStringSubmatch(strings.ToLower(notice))
 		h, _ := strconv.Atoi(m[1])
 		min := 0
 		if m[2] != "" {
@@ -54,7 +57,7 @@ func limitReset(screen string, now time.Time) (time.Time, string, bool) {
 		if now.Sub(at) > 12*time.Hour {
 			at = at.AddDate(0, 0, 1)
 		}
-		return at, strings.TrimSpace(lines[i]), true
+		return at, notice, true
 	}
 	return time.Time{}, "", false
 }
@@ -64,11 +67,30 @@ func limitReset(screen string, now time.Time) (time.Time, string, bool) {
 // conversation (a test, a reply about this feature) once made the runner
 // type "continue" into a session that wasn't stopped at all.
 func isLimitNotice(lines []string, i int) bool {
+	_, ok := limitNotice(lines, i)
+	return ok
+}
+
+// limitNotice returns the limit notice starting at line i, joined across
+// the lines Claude wrapped it onto: in a narrow tile "resets 5:30pm" lands
+// on the next line, and the notice read alone never matched.
+func limitNotice(lines []string, i int) (string, bool) {
 	l := strings.TrimSpace(lines[i])
-	if !strings.HasPrefix(l, "⎿") || !limitRe.MatchString(strings.ToLower(l)) {
-		return false
+	if !strings.HasPrefix(l, "⎿") || !strings.Contains(strings.ToLower(l), "hit your") {
+		return "", false
 	}
-	return i+1 < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[i+1]), "/upgrade")
+	notice := l
+	for j := i + 1; j < len(lines) && j <= i+4; j++ {
+		next := strings.TrimSpace(lines[j])
+		if strings.HasPrefix(next, "/upgrade") {
+			return notice, limitRe.MatchString(strings.ToLower(notice))
+		}
+		if next == "" || strings.HasPrefix(next, "⎿") || strings.HasPrefix(next, "❯") || isStep(next) {
+			return "", false
+		}
+		notice += " " + next
+	}
+	return "", false
 }
 
 // isStep reports whether a line starts one of Claude's steps: "●", which
