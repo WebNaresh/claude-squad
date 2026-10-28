@@ -32,14 +32,14 @@ type IssuePicker struct {
 	Loading bool
 	Err     error
 	issues  []session.Issue
-	inPR    int          // open issues hidden because an open PR already closes them
-	stale   bool         // showing the last list while a fresh one loads
+	inPR    int  // open issues hidden because an open PR already closes them
+	stale   bool // showing the last list while a fresh one loads
 	// refreshed says when the last reload landed, for the footer: an r that
 	// brought the same list changed nothing on screen and looked ignored.
 	refreshed string
-	loadStart time.Time // when the reload in flight started, for "refreshing… 5s"
-	busy    map[int]bool // issues that already have a session
-	skipped map[int]bool // issues the user unticked: not ticked by default again
+	loadStart time.Time    // when the reload in flight started, for "refreshing… 5s"
+	busy      map[int]bool // issues that already have a session
+	skipped   map[int]bool // issues the user unticked: not ticked by default again
 	// NewestFirst lists (and ticks) the newest issues first instead of the
 	// oldest; s switches it, saved per project by the caller.
 	NewestFirst bool
