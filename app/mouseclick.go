@@ -3,6 +3,7 @@ package app
 import (
 	"claude-squad/session"
 	"claude-squad/ui"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -100,6 +101,14 @@ func (m *home) handleGridMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
 			m.sel.active = false
 			if !m.sel.wasFocused {
 				return nil, true
+			}
+			hit := m.sel.pressHit
+			if c := commandAt(hit.lines, hit.row, hit.w0-4); c != "" {
+				return copyCommand(c), true
+			}
+			if held := time.Since(m.sel.at); held >= heldTooLong {
+				logEvent("press held %s without a drag: not opened as a click", held.Round(100*time.Millisecond))
+				return m.handleError(fmt.Errorf("held without moving: nothing selected · a firm press opens macOS Look Up and stops the drag: press lightly, or turn off Trackpad › Look up & data detectors")), true
 			}
 			return m.clickAt(m.sel.pressHit, m.sel.ext, m.sel.sx), true
 		}
