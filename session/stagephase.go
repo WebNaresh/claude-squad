@@ -29,6 +29,19 @@ func StagePhase(sessionID string) string {
 	return stageLabels[strings.TrimSpace(string(b))]
 }
 
+// StageActive is true from the moment /stage starts until the session gets
+// its next message: staging, posting its issue comment, or "✓ done · close
+// session" (.stagephase is cleared on the next message; .stagelast, which
+// keeps the badge, is not read here).
+func StageActive(sessionID string) bool {
+	home, err := os.UserHomeDir()
+	if sessionID == "" || err != nil {
+		return false
+	}
+	b, err := os.ReadFile(filepath.Join(home, ".claude", ".session-named", sessionID+".stagephase"))
+	return err == nil && strings.TrimSpace(string(b)) != ""
+}
+
 var stageLabels = map[string]string{
 	"staging": "⋯ staging",
 	"staged":  "✓ staged",
