@@ -84,3 +84,17 @@ func TestContinueRest(t *testing.T) {
 		}
 	}
 }
+
+// "5-hour limit", wrapped by a 65-column tile (2026-10-28: no tile continued).
+func TestLimitResetWrapped(t *testing.T) {
+	loc := time.FixedZone("IST", 5*3600+1800)
+	now := time.Date(2026, 10, 28, 17, 33, 0, 0, loc)
+	screen := "  ⎿  Allowed by auto mode classifier\n  ⎿  You've hit your 5-hour limit · resets \n     5:30pm (Asia/Calcutta)  \n     /upgrade or /usage-credits to finish what \n     you're working on.\n\n✻ Cogitated for 4m 52s\n─────\n❯ \n─────\n"
+	at, _, ok := limitReset(screen, now)
+	if !ok || at.Hour() != 17 || at.Minute() != 30 {
+		t.Fatalf("reset = %v ok=%v, want 17:30", at, ok)
+	}
+	if !limitIsLast(screen) {
+		t.Error("stopped on a wrapped limit, but not seen as last")
+	}
+}
