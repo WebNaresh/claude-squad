@@ -48,7 +48,9 @@ func TestResumeAfterLimitTiming(t *testing.T) {
 	sessions := []*session.ExternalSession{{Kind: session.KindTmux, Name: name, Live: name, Status: "idle"}}
 	done := map[string]bool{}
 	day := time.Now()
-	at := func(h, m, s int) time.Time { return time.Date(day.Year(), day.Month(), day.Day(), h, m, s, 0, time.Local) }
+	at := func(h, m, s int) time.Time {
+		return time.Date(day.Year(), day.Month(), day.Day(), h, m, s, 0, time.Local)
+	}
 	count := func() int {
 		time.Sleep(300 * time.Millisecond)
 		b, _ := os.ReadFile(typed)
