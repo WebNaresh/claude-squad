@@ -510,6 +510,7 @@ func CloseStaleQueuedIssues() {
 // starts Claude with the issue thread, in the same session.
 func StartIssueSession(dir string, issue Issue) (string, error) {
 	name := IssueSessionName(dir, issue.Number)
+	width, height := "200", "50"
 	if exec.Command("tmux", "has-session", "-t", "="+name).Run() == nil {
 		out, _ := exec.Command("tmux", "show-options", "-v", "-t", name, queuedOption).Output()
 		if strings.TrimSpace(string(out)) != "1" {
@@ -519,6 +520,14 @@ func StartIssueSession(dir string, issue Issue) (string, error) {
 		// it failed ("fork failed: Device not configured") and left the pane
 		// with no process, a blank tile forever; a second respawn on that pane
 		// crashed the tmux server (tmux 3.7c), killing every session.
+		// Keep the queued session's size: cs already fitted it to its tile
+		// and fits a name only once, so a new 200x50 one stayed wider than
+		// the tile and its lines ran off the right edge.
+		if size, err := exec.Command("tmux", "display-message", "-p", "-t", "="+name+":", "#{window_width} #{window_height}").Output(); err == nil {
+			if w, h, ok := strings.Cut(strings.TrimSpace(string(size)), " "); ok && w != "" && h != "" {
+				width, height = w, h
+			}
+		}
 		_ = exec.Command("tmux", "kill-session", "-t", "="+name).Run()
 	}
 	var out []byte
@@ -527,7 +536,7 @@ func StartIssueSession(dir string, issue Issue) (string, error) {
 		if try > 0 {
 			time.Sleep(500 * time.Millisecond)
 		}
-		out, err = exec.Command("tmux", "new-session", "-d", "-s", name, "-c", dir, "-x", "200", "-y", "50",
+		out, err = exec.Command("tmux", "new-session", "-d", "-s", name, "-c", dir, "-x", width, "-y", height,
 			"gai", "issue", issue.URL).CombinedOutput()
 		if err == nil {
 			break
