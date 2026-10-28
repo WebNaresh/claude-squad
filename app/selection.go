@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -30,12 +31,19 @@ type tileSelection struct {
 	// wasFocused: the tile had focus before the press; only then does a
 	// click open an image or path.
 	wasFocused bool
+	at         time.Time // when the button went down
 }
+
+// heldTooLong: a press held this long without moving is not a click. On a
+// Mac with Force Click on, a firm press opens Look Up (seen: its "No
+// Results Found" popup over the path) and the terminal stops sending the drag; letting go then opened the file instead
+// of copying the command the user was selecting (2026-10-28).
+const heldTooLong = 700 * time.Millisecond
 
 // startSelection records a press inside a tile's text.
 func (m *home) startSelection(x, y int, hit gridHit) {
 	m.sel = tileSelection{active: true, x0: hit.x0 + 1, x1: hit.x0 + hit.w0 - 2,
-		y0: hit.textTop, y1: hit.textTop + len(hit.lines) - 1, sx: x, sy: y, ex: x, ey: y, pressHit: hit}
+		y0: hit.textTop, y1: hit.textTop + len(hit.lines) - 1, sx: x, sy: y, ex: x, ey: y, pressHit: hit, at: time.Now()}
 }
 
 // moveSelection extends the drag, kept inside the tile it started in.
