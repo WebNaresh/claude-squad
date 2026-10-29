@@ -546,7 +546,29 @@ func StartIssueSession(dir string, issue Issue) (string, error) {
 		return "", fmt.Errorf("could not start issue #%d: %s", issue.Number, strings.TrimSpace(string(out)))
 	}
 	_ = exec.Command("tmux", "set-option", "-t", name, "window-size", "latest").Run()
+	// When gai stops with an error the tile stays, showing it. It used to
+	// vanish with the error, and the runner started the issue again at once:
+	// glitchgrab #720 failed at "Creating PR…" 60 times in a row (2026-10-29).
+	KeepOnExit(name, true)
 	return name, nil
+}
+
+// KeepOnExit sets whether a session's pane stays when its program exits.
+// Only while gai runs: once Claude works in the tile, quitting Claude closes
+// the session as before, instead of leaving a dead pane.
+func KeepOnExit(name string, keep bool) {
+	v := "off"
+	if keep {
+		v = "on"
+	}
+	_ = exec.Command("tmux", "set-option", "-t", "="+name+":", "remain-on-exit", v).Run()
+}
+
+// PaneDead reports whether a session's program has exited (its pane kept
+// by remain-on-exit) or the session is gone.
+func PaneDead(name string) bool {
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", "="+name+":", "#{pane_dead}").Output()
+	return err != nil || strings.TrimSpace(string(out)) == "1"
 }
 
 // PressKeys types text and Enter into a tmux session.
