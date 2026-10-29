@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/charmbracelet/x/ansi"
+
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -32,18 +34,37 @@ func commandAt(lines []string, row, w int) string {
 	if start < 0 {
 		return ""
 	}
-	row0 := func(r int) selRow {
-		line := strings.TrimRight(lines[r], " ")
-		return selRow{text: line, line: line, end: true}
+	// Every row below, down to a blank row, a list item or a row indented
+	// less than the "!", is the same command: it is one shell line. Claude
+	// moves a long path down to a row of its own ("-f" then the path), and
+	// the drag-copy rule that starts a new line there (joinWrapped) split
+	// the command: zsh ran the path on its own ("permission denied").
+	col := strings.Index(lines[start], "!")
+	end := start
+	for r := start + 1; r < len(lines) && r-start < 20; r++ {
+		l := strings.TrimRight(lines[r], " ")
+		t := strings.TrimLeft(l, " ")
+		if t == "" || len(l)-len(t) < col || listStart.MatchString(t) {
+			break
+		}
+		end = r
 	}
-	rows := []selRow{row0(start)}
-	for r := start + 1; r < len(lines) && wraps(rows[len(rows)-1], row0(r), w); r++ {
-		rows = append(rows, row0(r))
-	}
-	if start+len(rows)-1 < row {
+	if end < row {
 		return "" // the click is below the command's last row
 	}
-	text := strings.TrimSpace(joinWrapped(rows, w))
+	text := strings.TrimSpace(lines[start])
+	for r := start + 1; r <= end; r++ {
+		prev := strings.TrimRight(lines[r-1], " ")
+		sep := " "
+		// A full row was cut mid-word (a path): no space at the join.
+		if ansi.StringWidth(prev) >= w {
+			p := strings.TrimSpace(prev)
+			if last := p[strings.LastIndex(p, " ")+1:]; last == p || strings.Contains(last, "/") {
+				sep = ""
+			}
+		}
+		text += sep + strings.TrimSpace(lines[r])
+	}
 	if i := strings.Index(text, "! "); i > 0 {
 		text = text[i:] // drop a list marker before it ("1. ! …")
 	}
