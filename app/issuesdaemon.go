@@ -202,7 +202,7 @@ func RunIssuesDaemon() error {
 			skipped := readSkipped(p)
 			offer := 0
 			for _, is := range issues[p] {
-				if is.PR == 0 && !is.Waits() && !busy[is.Number] && !skipped[is.Number] {
+				if is.PR == 0 && !is.Waits() && !busy[is.Number] && !skipped[is.Number] && !gaiFailedRecently(p, is.Number) {
 					offer++
 				}
 			}
@@ -265,7 +265,7 @@ func RunIssuesDaemon() error {
 				if n == 0 {
 					break
 				}
-				if is.PR > 0 || is.Waits() || busy[is.Number] || skipped[is.Number] {
+				if is.PR > 0 || is.Waits() || busy[is.Number] || skipped[is.Number] || gaiFailedRecently(p, is.Number) {
 					continue
 				}
 				if _, err := session.QueueIssueSession(p, is); err != nil {
@@ -284,13 +284,39 @@ func RunIssuesDaemon() error {
 	}
 }
 
+// gaiFailed: when gai last stopped before Claude started, per project#issue.
+// Such an issue isn't started again for gaiRetryAfter, so a gai that fails
+// (a PR it can't create) doesn't run in a loop once its tile is closed.
+var gaiFailed = map[string]time.Time{}
+
+const gaiRetryAfter = 30 * time.Minute
+
+func gaiFailedRecently(project string, n int) bool {
+	at, ok := gaiFailed[fmt.Sprint(project, "#", n)]
+	return ok && time.Since(at) < gaiRetryAfter
+}
+
+// gaiLastWords returns the last few lines gai printed, for the log.
+func gaiLastWords(screen string) string {
+	var keep []string
+	lines := strings.Split(screen, "\n")
+	for i := len(lines) - 1; i >= 0 && len(keep) < 4; i-- {
+		if l := strings.TrimSpace(lines[i]); l != "" && !strings.HasPrefix(l, "Pane is dead") {
+			keep = append([]string{l}, keep...)
+		}
+	}
+	return strings.Join(keep, " | ")
+}
+
 // stepDaemonJob answers one gai job's questions; true when it is done
 // (Claude runs, gai stopped, or it timed out).
 func stepDaemonJob(j *daemonJob, issues []session.Issue) bool {
 	line, alive := session.PaneLastLine(j.name)
 	switch {
-	case !alive:
-		logEvent("daemon: gai issue #%d stopped before Claude started", j.issue.Number)
+	case !alive || session.PaneDead(j.name):
+		logEvent("daemon: gai issue #%d stopped before Claude started; its tile keeps what gai said: %s",
+			j.issue.Number, gaiLastWords(session.PaneScreen(j.name)))
+		gaiFailed[fmt.Sprint(j.project, "#", j.issue.Number)] = time.Now()
 		return true
 	case time.Since(j.started) > issueJobTimeout:
 		logEvent("daemon: #%d taking long; leaving it in its tile", j.issue.Number)
@@ -327,6 +353,7 @@ func stepDaemonJob(j *daemonJob, issues []session.Issue) bool {
 		for _, e := range sessions {
 			if e.Name == j.name && e.Status != "" {
 				logEvent("daemon: #%d: Claude is working", j.issue.Number)
+				session.KeepOnExit(j.name, false)
 				return true
 			}
 		}
