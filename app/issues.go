@@ -330,10 +330,11 @@ func (m *home) stepIssues() tea.Cmd {
 	j := m.issueJob
 	line, alive := session.PaneLastLine(j.name)
 	switch {
-	case !alive:
+	case !alive || session.PaneDead(j.name):
 		m.issueJob = nil
-		return tea.Batch(m.handleError(fmt.Errorf("gai issue #%d stopped before Claude started; see `gai --logs`", j.issue.Number)), m.issueTick(0))
+		return tea.Batch(m.handleError(fmt.Errorf("gai issue #%d stopped before Claude started; its tile shows why", j.issue.Number)), m.issueTick(0))
 	case m.claudeRunningIn(j.name):
+		session.KeepOnExit(j.name, false)
 		m.issueJob = nil
 		return m.issueTick(0)
 	case time.Since(j.started) > issueJobTimeout:
