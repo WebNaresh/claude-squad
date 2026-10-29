@@ -238,6 +238,7 @@ func (m *home) handleDockMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
 		m.sel = tileSelection{}
 		if hit.row >= 0 && hit.row < h {
 			m.startSelection(msg.X, msg.Y, hit)
+			m.sel.scroll.target = m.dockName()
 		}
 		return cmd, true
 	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
