@@ -88,8 +88,7 @@ func (m *home) handleGridMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
 	if m.sel.active {
 		switch msg.Action {
 		case tea.MouseActionMotion:
-			m.moveSelection(msg.X, msg.Y)
-			return nil, true
+			return m.moveSelection(msg.X, msg.Y), true
 		case tea.MouseActionRelease:
 			if m.sel.dragged {
 				return m.finishSelection(), true
@@ -189,6 +188,11 @@ func (m *home) handleGridMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
 	if hit.row >= 0 {
 		m.startSelection(msg.X, msg.Y, hit)
 		m.sel.ext, m.sel.wasFocused = entry.External, wasFocused
+		if entry.Instance != nil {
+			m.sel.scroll.target = entry.Instance.TmuxName()
+		} else if entry.External != nil {
+			m.sel.scroll.target = entry.External.Live
+		}
 	}
 	return m.autoFocus(), true
 }
