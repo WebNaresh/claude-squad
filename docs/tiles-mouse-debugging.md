@@ -16,6 +16,7 @@ Each section is a bug the user actually hit.
   edge, or whose next row's first word could not have fit, is joined to the next;
   bullets, ⏺/⎿/❯ rows and box/table rows stay separate; the shared indent is dropped.
 - The key bar shows `drag  select + copy` while typing, and help (`⌃Space ?`) lists it.
+- Drag past a tile's top/bottom edge: it scrolls and the selection grows (`app/dragscroll.go`). Shell output is copied from tmux's own lines (`app/tmuxlines.go`), not guessed from the screen.
 - A click on a `! …` command (in a selected tile) copies the whole command (`app/commandclick.go`): on a Mac with Force Click on, a firm press opens Look Up and the drag never arrives.
 - **Rule:** any new mouse feature must keep drag-select, click and wheel working.
   Check all three (list below) before saying it's done.
