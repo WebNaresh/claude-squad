@@ -52,6 +52,12 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Guard:** none automatic; `tmux list-panes -a -F '#{session_name} #{window_width}x#{window_height}'` shows any tile still at 200x50.
 - **Files:** `session/issues.go` (StartIssueSession), `app/app.go`.
 
+### Issue tile closing and starting again in a loop
+- **Saw (2026-10-29):** glitchgrab #720's tile ran gai to "→ Creating PR…", vanished, came back and did it again, every ~20s.
+- **Cause:** gai stopped at `gh pr create` (no open PR right after #713 was merged). Its tmux session closed with the error, so nobody saw it, and the runner treated the issue as free again and started it straight away: 60 starts from 11:40 to 12:01. It then worked on its own (PR #721 at 12:01:32), so gai's exact error wasn't seen.
+- **Fix:** issue sessions keep their pane when gai exits (`remain-on-exit`), so the tile shows what gai said and still counts as busy. The runner logs gai's last lines ("its tile keeps what gai said: …") and doesn't start that issue again for 30 min after you close the tile (`gaiFailed`, `app/issuesdaemon.go`; `PaneDead`, `session/issues.go`). The issue picker's queue checks `PaneDead` too (`app/issues.go`). Once Claude works in the tile, remain-on-exit goes off again (`KeepOnExit`), so quitting Claude still closes the session.
+- **Guard:** live, a failing command on `tmux -L cstest` with remain-on-exit kept its error on screen, `pane_dead`=1.
+
 ### Issue tile stuck on "Nothing on screen yet"
 - **Saw:** queued issue tiles (#2853, #2855) never started; blank forever.
 - **Cause:** a queued issue was started with `tmux respawn-pane -k`, which failed on macOS (`fork failed: Device not configured`) after killing the queued screen, leaving a pane with no process (`pane_pid -1`). The queued flag was already cleared, so cs never retried. Respawning that pane again segfaults tmux 3.7c (`input_free` in `spawn_pane`) and kills every session: never run `respawn-pane` on a `pane_pid -1` pane; `kill-session` it.
