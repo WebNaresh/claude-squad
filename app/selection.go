@@ -32,6 +32,7 @@ type tileSelection struct {
 	// click open an image or path.
 	wasFocused bool
 	at         time.Time // when the button went down
+	scroll     dragScroll
 }
 
 // heldTooLong: a press held this long without moving is not a click. On a
@@ -46,13 +47,22 @@ func (m *home) startSelection(x, y int, hit gridHit) {
 		y0: hit.textTop, y1: hit.textTop + len(hit.lines) - 1, sx: x, sy: y, ex: x, ey: y, pressHit: hit, at: time.Now()}
 }
 
-// moveSelection extends the drag, kept inside the tile it started in.
-func (m *home) moveSelection(x, y int) {
+// moveSelection extends the drag, kept inside the tile it started in. Past
+// the tile's top or bottom edge the pane scrolls (dragscroll.go).
+func (m *home) moveSelection(x, y int) tea.Cmd {
 	s := &m.sel
 	s.ex, s.ey = min(max(x, s.x0), s.x1), min(max(y, s.y0), s.y1)
+	// Above the tile the selection runs to the row's start, below it to the
+	// row's end, as in a plain terminal.
+	if y < s.y0 {
+		s.ex = s.x0
+	} else if y > s.y1 {
+		s.ex = s.x1
+	}
 	if s.ex != s.sx || s.ey != s.sy {
 		s.dragged, s.shown = true, true
 	}
+	return m.dragPastEdge(y)
 }
 
 // ordered returns the selection's start and end in reading order.
@@ -102,19 +112,34 @@ func (m *home) highlightSelection(view string) string {
 // Claude's line wrapping undone (joinWrapped), so a long path or command
 // comes out as one line, not several with the indent in between.
 func (m *home) selectedText() string {
-	screen := strings.Split(m.lastView, "\n")
+	if m.sel.scroll.on {
+		// Dragged past the edge: the selection runs over rows scrolled out
+		// of view, kept in scroll.doc (dragscroll.go).
+		m.syncDragDoc()
+		screen, sel := m.sel.docScreen()
+		return selectedTextFrom(screen, sel)
+	}
+	return selectedTextFrom(strings.Split(m.lastView, "\n"), m.sel)
+}
+
+func selectedTextFrom(screen []string, sel tileSelection) string {
 	// The pane sits inside the tile's text columns, one padding column on
 	// each side.
-	paneL, paneR := m.sel.x0+1, m.sel.x1-1
+	paneL, paneR := sel.x0+1, sel.x1-1
 	var rows []selRow
 	for y := range screen {
-		from, to, ok := m.sel.span(y)
+		from, to, ok := sel.span(y)
 		if !ok {
 			continue
 		}
 		line, bar := unquote(strings.TrimRight(ansi.Strip(ansi.Cut(screen[y], paneL, paneR+1)), " "))
 		text, _ := unquote(strings.TrimRight(ansi.Strip(ansi.Cut(screen[y], from, to+1)), " "))
-		rows = append(rows, selRow{text: text, line: line, end: to >= paneR, skip: paneL - from, bar: bar})
+		raw := strings.TrimRight(ansi.Strip(ansi.Cut(screen[y], paneL, paneR+1)), " ")
+		rows = append(rows, selRow{text: text, line: line, end: to >= paneR, skip: paneL - from, bar: bar,
+			raw: raw, c0: max(from-paneL, 0), c1: to - paneL})
+	}
+	if text, ok := tmuxLines(sel.scroll.target, rows); ok {
+		return text
 	}
 	return joinWrapped(rows, paneR-paneL+1)
 }
@@ -124,8 +149,10 @@ func (m *home) selectedText() string {
 type selRow struct {
 	text, line string
 	end        bool
-	skip       int // columns of text before the pane's first column (padding); negative when the drag started inside the row
-	bar        int // columns of a quote bar unquote took out of line
+	skip       int    // columns of text before the pane's first column (padding); negative when the drag started inside the row
+	bar        int    // columns of a quote bar unquote took out of line
+	raw        string // the pane row as shown, nothing taken out
+	c0, c1     int    // selected pane columns, inclusive
 }
 
 // unquote takes the bar Claude draws in front of each row of a quote ("> "
@@ -180,6 +207,14 @@ func wraps(a, b selRow, w int) bool {
 	return aw+1+ansi.StringWidth(first) > w
 }
 
+// inCommand: b goes on a "! …" command line (one shell line) that a wraps
+// to. Claude moves a long path down to a row of its own, which elsewhere
+// starts a new line; in a command that split it and zsh ran the path alone.
+func inCommand(line string, a, b selRow) bool {
+	next := strings.TrimSpace(b.line)
+	return a.end && next != "" && !listStart.MatchString(next) && isCommandStart(strings.TrimSpace(line))
+}
+
 // joinWrapped joins wrapped rows and drops the indent all lines share.
 // A word or path too long for the row was cut mid-word, so it is joined
 // without a space; a row wrapped at a space gets the space back.
@@ -187,7 +222,7 @@ func joinWrapped(rows []selRow, w int) string {
 	var lines []string
 	var indents, skips []int // each line's indent on screen (whole first row) and its first row's skip
 	for i, r := range rows {
-		if i > 0 && len(lines) > 0 && wraps(rows[i-1], r, w) {
+		if i > 0 && len(lines) > 0 && (wraps(rows[i-1], r, w) || inCommand(lines[len(lines)-1], rows[i-1], r)) {
 			prev := strings.TrimSpace(rows[i-1].text)
 			sep := " "
 			if ansi.StringWidth(rows[i-1].line)+rows[i-1].bar >= w {
