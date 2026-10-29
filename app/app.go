@@ -558,6 +558,8 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case hideErrMsg:
 		m.errBox.Clear()
+	case dragScrollMsg:
+		return m, m.onDragScroll(msg)
 	case dockCapturedMsg:
 		m.applyDockCapture(msg)
 		return m, nil
