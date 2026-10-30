@@ -70,6 +70,9 @@ type agentInfo struct {
 	Name      string `json:"name"`
 	Status    string `json:"status"`
 	Pid       int    `json:"pid"`
+	// Headless is set when the list is fetched: the session file it comes from
+	// is gone once the run ends, while this list stays cached for 10s.
+	Headless bool `json:"-"`
 }
 
 // RealClaude returns the claude binary itself, skipping the tmux launcher.
@@ -109,6 +112,9 @@ func claudeAgents() []agentInfo {
 	var agents []agentInfo
 	if err := json.Unmarshal(out, &agents); err != nil {
 		return agentsCache
+	}
+	for i := range agents {
+		agents[i].Headless = agents[i].Kind != "background" && isHeadless(agents[i].Pid)
 	}
 	agentsCache = agents
 	return agents
@@ -218,6 +224,9 @@ func ListExternalSessions() ([]*ExternalSession, map[string]string, error) {
 		}
 		if strings.HasPrefix(filepath.Base(a.Cwd), "claudesquad_") || strings.Contains(a.Cwd, "/.claude-squad/worktrees/") {
 			continue // one of cs's own agents
+		}
+		if a.Headless {
+			continue // a program's `claude -p` (GlitchRecord): nothing to show or type into
 		}
 		// Claude started from a shell in one of our tmux panes (typed `claude`
 		// in a cs project terminal or a cc_ session): its parent is the pane's
@@ -380,6 +389,24 @@ func startShell(name, dir string, width, height int) error {
 		return fmt.Errorf("could not open a terminal: %s", strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// isHeadless reports a Claude run by a program through `claude -p` or the Agent
+// SDK. `claude agents` calls these "interactive" too; only the session file's
+// entrypoint ("sdk-cli", "sdk-ts"…) tells them from a person's session.
+func isHeadless(pid int) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".claude", "sessions", strconv.Itoa(pid)+".json"))
+	if err != nil {
+		return false
+	}
+	var s struct {
+		Entrypoint string `json:"entrypoint"`
+	}
+	return json.Unmarshal(data, &s) == nil && strings.HasPrefix(s.Entrypoint, "sdk")
 }
 
 // parentTable answers parent-pid lookups from one `ps` call, made on first use.
