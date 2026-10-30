@@ -301,6 +301,13 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Saw:** the user wanted 3 or 4 of the ticked issues; unticking the rest with space marked each "(skipped)", so auto never offered them again and they looked gone. They asked for skip to be its own key, and for a quick way to start exactly 1, 2 or 6.
 - **Fix:** space only ticks/unticks (ticking a skipped issue takes the skip back). `x` skips or un-skips; a skipped issue stays in the list, greyed, and can be ticked any time. Digits 1-9 tick the first N startable issues in list order (no session, not skipped) and untick the rest. File: `ui/issuepicker.go`. Test: `TestPickerTickSkipAndCount`.
 
+### GlitchRecord runs opened their own tile (2026-10-30)
+- **Saw:** a `practise_stack` tab with a view-only tile (`practise-stack-26`) showing GlitchRecord's script-review prompt, opened by itself and replaced by a new one each round.
+- **Cause:** GlitchRecord starts `claude -p` per round. `claude agents --json` lists those as `kind: interactive`, so cs treated each as a person's session in another terminal.
+- **Fix:** skip any non-background agent whose `~/.claude/sessions/<pid>.json` has an `sdk*` entrypoint (`isHeadless`), decided when the list is fetched: the file is deleted when the run ends while `claude agents` stays cached 10s, and a check at draw time flashed a ghost tile for the last seconds of each run (seen live on the first try). Covers every `claude -p`/Agent SDK caller, not only GlitchRecord; VS Code sessions (`claude-vscode`) stay. The check runs before the parent-pane match, so a `claude -p` started from a tile's shell can't rename that tile either.
+- **Guard:** `TestIsHeadless`, `TestHeadlessStaysHiddenAfterFileGone`; activity.log shows no `session appeared: pid-N` for a `claude -p` run.
+- **Files:** `session/external.go`, `session/closed_test.go`.
+
 ## Test incidents (rules for live tests)
 
 - A test pressed Enter on the user's real session and moved it. → Check the selected row on screen before any destructive key (CLAUDE.md "Live tests").
