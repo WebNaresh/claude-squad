@@ -58,6 +58,14 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Fix:** issue sessions keep their pane when gai exits (`remain-on-exit`), so the tile shows what gai said and still counts as busy. The runner logs gai's last lines ("its tile keeps what gai said: …") and doesn't start that issue again for 30 min after you close the tile (`gaiFailed`, `app/issuesdaemon.go`; `PaneDead`, `session/issues.go`). The issue picker's queue checks `PaneDead` too (`app/issues.go`). Once Claude works in the tile, remain-on-exit goes off again (`KeepOnExit`), so quitting Claude still closes the session.
 - **Guard:** live, a failing command on `tmux -L cstest` with remain-on-exit kept its error on screen, `pane_dead`=1.
 
+### Issue tile dead at "Fetching #N context…"
+- **Saw (2026-10-30):** practise_stack #2906's tile ended with `dial tcp 20.207.73.85:443: i/o timeout`, `error: could not fetch issue #2906`, `Pane is dead (status 1)`. PR steps had already worked; Claude never started.
+- **Cause:** a network blip on gai's last `gh issue view`. gai tried once and gave up, so the whole run was lost. The tile stayed dead as designed (see "Issue tile closing and starting again in a loop").
+- **Fix:** `_gai_gh_read` in gai-tools `gai` tries reads up to 4 times, waiting 5s/10s/15s between, plus gh's own timeouts, on network errors only; "not found" still fails at once. Used for the issue context, labels, open PR list and PR view. A longer outage still ends in a dead tile: close it, and the runner starts the issue again 30 min after the failure.
+- **Guard:** fake `gh` run: flaky recovers on try 3, down fails after 4, not-found fails after 1.
+- **Same words, other cause (2026-10-30):** #2914 ended with `Could not resolve to an issue` then `could not fetch issue`: it was deleted on GitHub while gai ran (`gh api repos/<repo>/issues/<n>` gives 410). Not a network problem; `gai issue <n> --remove` clears its dead `Closes` line.
+- **Files:** `gai` (gai-tools repo).
+
 ### Issue tile stuck on "Nothing on screen yet"
 - **Saw:** queued issue tiles (#2853, #2855) never started; blank forever.
 - **Cause:** a queued issue was started with `tmux respawn-pane -k`, which failed on macOS (`fork failed: Device not configured`) after killing the queued screen, leaving a pane with no process (`pane_pid -1`). The queued flag was already cleared, so cs never retried. Respawning that pane again segfaults tmux 3.7c (`input_free` in `spawn_pane`) and kills every session: never run `respawn-pane` on a `pane_pid -1` pane; `kill-session` it.
