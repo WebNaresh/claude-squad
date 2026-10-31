@@ -711,6 +711,17 @@ func (e *ExternalSession) Attach() (chan struct{}, error) {
 	if e.Kind != KindTmux {
 		return nil, fmt.Errorf("not a tmux session")
 	}
+	// A tile fit (resize-window) pins the window to window-size manual, so full
+	// screen would keep the tile's size with dots around it. Follow this
+	// terminal instead, and give the tile its size back on detach.
+	target := "=" + e.Name + ":"
+	size, _ := exec.Command("tmux", "display-message", "-p", "-t", target, "#{window_width} #{window_height}").Output()
+	_ = exec.Command("tmux", "set-option", "-w", "-t", target, "window-size", "latest").Run()
+	refit := func() {
+		if w, h, ok := strings.Cut(strings.TrimSpace(string(size)), " "); ok {
+			_ = exec.Command("tmux", "resize-window", "-t", target, "-x", w, "-y", h).Run()
+		}
+	}
 	t := tmux.NewExternalTmuxSession(e.Name)
 	if err := t.Restore(); err != nil {
 		return nil, err
@@ -718,12 +729,14 @@ func (e *ExternalSession) Attach() (chan struct{}, error) {
 	ch, err := t.Attach()
 	if err != nil {
 		t.ReleaseClient()
+		refit()
 		return nil, err
 	}
 	done := make(chan struct{})
 	go func() {
 		<-ch
 		t.ReleaseClient()
+		refit()
 		close(done)
 	}()
 	return done, nil
