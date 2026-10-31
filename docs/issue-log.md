@@ -52,11 +52,25 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Guard:** none automatic; `tmux list-panes -a -F '#{session_name} #{window_width}x#{window_height}'` shows any tile still at 200x50.
 - **Files:** `session/issues.go` (StartIssueSession), `app/app.go`.
 
+### Full-screen session stuck small, dots around it (2026-10-31)
+- **Saw:** glitchgrab #617 opened full screen in a 271x66 terminal but drew at 203x60; the area right of and below it was filled with tmux dots.
+- **Cause:** `tmux resize-window` (every tile fit) also sets the window to `window-size manual`, so a client that attaches later no longer resizes it. `Attach` kept the tile's size. activity.log: `resize cc_glitchgrab_i617 to 203x60 (tile)`.
+- **Fix:** `ExternalSession.Attach` sets `window-size latest` before attaching and resizes back to the tile's size on detach, so `needsFit`'s record stays true.
+- **Guard:** none automatic; `tmux list-clients -F '#{session_name} #{client_width}x#{client_height}'` against `list-panes -a` shows any mismatch. `csterm_*` docks are pinned the same way; their Terminal tab attach path is not changed.
+- **Files:** `session/external.go` (Attach).
+
 ### Issue tile closing and starting again in a loop
 - **Saw (2026-10-29):** glitchgrab #720's tile ran gai to "→ Creating PR…", vanished, came back and did it again, every ~20s.
 - **Cause:** gai stopped at `gh pr create` (no open PR right after #713 was merged). Its tmux session closed with the error, so nobody saw it, and the runner treated the issue as free again and started it straight away: 60 starts from 11:40 to 12:01. It then worked on its own (PR #721 at 12:01:32), so gai's exact error wasn't seen.
 - **Fix:** issue sessions keep their pane when gai exits (`remain-on-exit`), so the tile shows what gai said and still counts as busy. The runner logs gai's last lines ("its tile keeps what gai said: …") and doesn't start that issue again for 30 min after you close the tile (`gaiFailed`, `app/issuesdaemon.go`; `PaneDead`, `session/issues.go`). The issue picker's queue checks `PaneDead` too (`app/issues.go`). Once Claude works in the tile, remain-on-exit goes off again (`KeepOnExit`), so quitting Claude still closes the session.
 - **Guard:** live, a failing command on `tmux -L cstest` with remain-on-exit kept its error on screen, `pane_dead`=1.
+
+### Issue tile dead: "No commits between main and dev" (2026-10-31)
+- **Saw:** glitchgrab #747, #750 and #715 stopped before Claude started, each soon after a PR was merged: `pull request create failed: GraphQL: No commits between main and dev`. Closing the tile and starting again worked, through the "Create an empty commit" question.
+- **Cause:** a gai bug, not cs. Standing on `main` with an old `dev`, gai counted `dev`'s squash-merged commits, so it decided no empty commit was needed. It then moved `dev` onto `main` (added in gai-tools #74), leaving nothing to open a PR with. The move itself is why the second try worked.
+- **Fix:** `gai pr` works out before counting whether the branch will be moved, and counts HEAD if so. `dev` gets its empty commit on the first try.
+- **Guard:** temp repo with a fake `gh`, on `main` with a squash-merged `dev`: failed with the same error before, opens the PR after. activity.log: `gai issue #N stopped before Claude started`.
+- **Files:** `gai` (gai-tools repo).
 
 ### Issue tile dead at "Fetching #N context…"
 - **Saw (2026-10-30):** practise_stack #2906's tile ended with `dial tcp 20.207.73.85:443: i/o timeout`, `error: could not fetch issue #2906`, `Pane is dead (status 1)`. PR steps had already worked; Claude never started.
