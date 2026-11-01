@@ -28,7 +28,7 @@ func isLeaderKey(k string) bool { return k == leaderKey || k == leaderSpace }
 // commandKeys are the Ctrl+] commands, in the order shown in the key bar.
 var commandKeys = []ui.Key{
 	{"C", "new Claude"}, {"T", "terminal"}, {"E", "new terminal"}, {"A", "add project"}, {"N", "issues"},
-	{"S", "source control"}, {"P", "push"}, {"Y", "copy"}, {"W", "close session"}, {"U", "off PR + skip"}, {"X", "close tab"},
+	{"S", "source control"}, {"P", "push"}, {"Y", "copy"}, {"W", "close session"}, {"U", "off PR + skip"}, {"X", "close tab"}, {"R", "hidden projects"},
 	{"!", "needs you"}, {"?", "help"}, {"Q", "quit"},
 }
 
@@ -42,6 +42,8 @@ func (m *home) handleLeader(msg tea.KeyMsg) tea.Cmd {
 		return chooseProjectCmd
 	case "x", "X":
 		return m.closeActiveProject()
+	case "r", "R":
+		return m.openTabPicker()
 	case "!":
 		return m.jumpToNeedsYou()
 	case "?", "/":
