@@ -125,7 +125,7 @@ func joining(issues []session.Issue, busy map[int]bool) int {
 
 // stepAuto runs autoCheck and schedules the next one.
 func (m *home) stepAuto() tea.Cmd {
-	return tea.Batch(m.autoCheck(), m.refreshTabChecks(), autoTick())
+	return tea.Batch(m.autoCheck(), m.refreshTabChecks(), m.refreshQuietTabs(), autoTick())
 }
 
 // autoCheck works out, for every auto project, how many issues could start
@@ -143,6 +143,12 @@ func (m *home) autoCheck() tea.Cmd {
 	for _, p := range m.projectTabs.Projects() {
 		m.projectTabs.SetFree(p, 0)
 		if !m.autoOn(p) {
+			// No auto loop, but its issues still decide if the tab shows.
+			if time.Since(m.autoFetched[p]) > autoListMaxAge && !fetching {
+				fetching = true
+				m.autoFetched[p] = time.Now()
+				cmds = append(cmds, loadIssues(p))
+			}
 			continue
 		}
 		running := m.autoRunning(p)
