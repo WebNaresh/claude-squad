@@ -302,6 +302,12 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Fix:** `reapLeftoverChildren` in `main.go` collects finished children at startup, before this run starts any of its own.
 - **Guard:** `ps -Ao ppid,stat | awk '$2 ~ /Z/'` under cs's pid should be near 0 after a self-update.
 
+### macOS kept asking App Management for cs-fork (2026-11-01)
+- **Saw:** "cs-fork was prevented from modifying apps on your Mac", again and again; the toggle in Privacy & Security never stuck.
+- **Cause:** each rebuild had a new ad-hoc signature (`Identifier=a.out`), and macOS keeps privacy choices per signature, so every build was a new app. The banner comes from something cs started (macOS blames the parent; likely glitchrecord's Electron, not confirmed).
+- **Fix:** builds are signed with a local certificate (`scripts/cs-sign`, called by `~/.local/bin/cs` and `app/selfupdate.go`). Key and its keychain live in `~/.claude-squad/signing` (10 years; no login keychain, so no prompts). No keychain = old ad-hoc behaviour.
+- **Guard:** `codesign -dr - ~/.local/bin/cs-fork` must show `identifier "cs-fork" and certificate leaf = H"21ac6c71…"`, the same after a rebuild.
+
 ### Rarely used projects filled the tab row (2026-11-01)
 - **Saw:** all 9 tabs always shown, including monthly-bill-breakup (used monthly) and others with nothing going on. Closing a tab was no answer: it leaves `open_projects`, so its issues stop being read and it can't come back on a new issue.
 - **Fix:** quiet projects (no open non-skipped issue, no session, no Claude in 7 days) sit behind `⋯ N more`; click it or ⌃Space R. They stay in `open_projects`. A project with auto off still has its issues read, for this. Files: `app/tabhide.go`, `ui/projecttabs.go`.
