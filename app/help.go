@@ -67,6 +67,7 @@ func (h helpTypeGeneral) toContent() string {
 		k("P", "push the branch (or click ↑N at the bottom; click ↓N to pull; PR #… opens the pull request, ↻ refreshes its checks)"),
 		k("A", "add another project (folder chooser)"),
 		k("X", "close this project's tab"),
+		k("R", "open a hidden project (⋯ N more: no issues, no session, no Claude for 7 days)"),
 		"",
 		k("Q", "quit (or ⌃Q twice)"),
 		"",
