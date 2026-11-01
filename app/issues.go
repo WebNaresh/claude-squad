@@ -232,7 +232,7 @@ func (m *home) handleIssuePickerKey(msg tea.KeyMsg) tea.Cmd {
 	p := m.issuePicker
 	switch msg.String() {
 	case "left", "right", "alt+left", "alt+right", "alt+b", "alt+f":
-		projects := m.projectTabs.Projects()
+		projects := m.projectTabs.ShownProjects()
 		i := indexOf(projects, p.Project)
 		if strings.HasSuffix(msg.String(), "left") || msg.String() == "alt+b" {
 			i = (i - 1 + len(projects)) % len(projects)
