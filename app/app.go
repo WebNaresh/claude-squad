@@ -99,6 +99,8 @@ const (
 	stateCommit
 	// stateIssuePicker is the state when the ⌥N issue picker is displayed.
 	stateIssuePicker
+	// stateTabPicker is the state when the hidden projects list is displayed.
+	stateTabPicker
 )
 
 type home struct {
@@ -206,6 +208,11 @@ type home struct {
 	// issues' sessions one after another
 	issuePicker *ui.IssuePicker
 	issueCache  map[string][]session.Issue // last issue list per project, shown at once next time
+	// tabPicker lists the hidden projects; quietAt is when quiet tabs were
+	// last worked out and tabLastUsed when Claude last ran in each project.
+	tabPicker   *tabPicker
+	quietAt     time.Time
+	tabLastUsed map[string]time.Time
 	issueQueue  []queuedIssue
 	issueJob    *issueJob
 	// needsSeen holds the sessions known to wait on the user (to spot new
@@ -398,6 +405,8 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		}
 	}
 	h.projectTabs.SetProjects(appConfig.OpenProjects, appConfig.ActiveProject)
+	// Before the first frame: a self-update must not redraw a changed row.
+	h.applyQuietTabs(readQuietTabs(appConfig.OpenProjects, nil, appConfig.ProjectAdded, time.Now()))
 	h.list.SetProject(h.projectTabs.Active())
 
 	logEvent("start pid=%d program=%q tabs=%v active=%s mouse=%v agents=%d",
@@ -651,6 +660,9 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tabChecksMsg:
 		m.applyTabChecks(msg)
 		return m, nil
+	case quietTabsMsg:
+		m.applyQuietTabs(msg)
+		return m, nil
 	case unlinkPollMsg:
 		return m, pollUnlink(msg)
 	case unlinkDoneMsg:
@@ -791,10 +803,15 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch hit := m.projectTabs.HitTest(msg.X); {
 			case hit == ui.HitAddProject:
 				return m, chooseProjectCmd
+			case hit == ui.HitMore:
+				return m, m.openTabPicker()
 			case hit >= 0:
 				return m, m.switchProject(m.projectTabs.Select(hit))
 			}
 			return m, nil
+		}
+		if m.state == stateTabPicker {
+			return m, m.handleTabPickerMouse(msg)
 		}
 		if cmd, ok := m.handleRecentMouse(msg); ok {
 			return m, cmd
@@ -992,6 +1009,9 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	}
 	if m.state == stateIssuePicker {
 		return m, m.handleIssuePickerKey(msg)
+	}
+	if m.state == stateTabPicker {
+		return m, m.handleTabPickerKey(msg)
 	}
 	if m.serversFocused && m.state == stateDefault {
 		return m, m.handleServersKey(msg)
@@ -2128,6 +2148,8 @@ func (m *home) view() string {
 		return m.placeCentered(m.textOverlay.Render(), mainView)
 	} else if m.state == stateIssuePicker && m.issuePicker != nil {
 		return m.placeCentered(m.issuePicker.Render(), mainView)
+	} else if m.state == stateTabPicker && m.tabPicker != nil {
+		return m.placeCentered(m.tabPicker.render(), mainView)
 	} else if m.state == stateCommit && m.commitOverlay != nil {
 		return m.placeCentered(m.commitOverlay.Render(), mainView)
 	} else if m.state == stateConfirm {
