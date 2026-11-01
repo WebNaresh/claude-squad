@@ -533,7 +533,8 @@ type cachedTile struct {
 func (m *home) renderGridCached() string {
 	tiles, focus := m.shownTiles()
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d|%d|%d|%d|", focus, m.paneWidth, m.contentHeight, m.ghostIdx())
+	originX := m.screenWidth - m.paneWidth // same origin as hitGrid
+	fmt.Fprintf(&b, "%d|%d|%d|%d|%d|", focus, m.paneWidth, m.contentHeight, m.ghostIdx(), originX)
 	for _, t := range tiles {
 		fmt.Fprintf(&b, "%s|%s|%s|%v|%d|", t.Title, t.Status, t.Model, t.NeedsYou, len(t.Content))
 		b.WriteString(t.Content)
@@ -547,7 +548,7 @@ func (m *home) renderGridCached() string {
 	}
 	m.gridRenderKey = key
 	m.gridRendered = lipgloss.JoinVertical(lipgloss.Left, strip,
-		ui.RenderGrid(tiles, focus, m.paneWidth, m.contentHeight))
+		ui.RenderGrid(tiles, focus, m.paneWidth, m.contentHeight, originX))
 	return m.gridRendered
 }
 
