@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"time"
 )
 
 func isGitDir(path string) bool {
@@ -24,6 +25,10 @@ func (c *Config) OpenProject(path string) error {
 		c.OpenProjects = append(c.OpenProjects, path)
 	}
 	c.ActiveProject = path
+	if c.ProjectAdded == nil {
+		c.ProjectAdded = map[string]time.Time{}
+	}
+	c.ProjectAdded[path] = time.Now()
 	return SaveConfig(c)
 }
 
@@ -37,6 +42,7 @@ func (c *Config) CloseProject(path string) error {
 		}
 	}
 	c.OpenProjects = open
+	delete(c.ProjectAdded, path)
 	if c.ActiveProject == path {
 		c.ActiveProject = ""
 		if len(open) > 0 {
