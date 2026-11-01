@@ -100,6 +100,10 @@ func (u *updater) checkCmd() tea.Cmd {
 			u.built = newest
 			return updateCheckMsg{}
 		}
+		// Same signature every build, or macOS forgets its privacy choices.
+		if out, err := exec.Command(filepath.Join(u.src, "scripts", "cs-sign"), tmp).CombinedOutput(); err != nil {
+			logEvent("self-update: signing skipped: %v %s", err, firstLineOf(string(out)))
+		}
 		if err := os.Rename(tmp, u.bin); err != nil {
 			log.WarningLog.Printf("self-update: %v", err)
 			u.built = newest
