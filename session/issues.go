@@ -49,8 +49,11 @@ type Issue struct {
 	// Video: a video request (label gg:video), e.g. a demo script a tester
 	// wrote. An editor makes it in GlitchRecord; it is never code to fix, so
 	// cs never starts a session on it (glitchgrab #642 was triaged a feature).
-	Video  bool `json:"-"`
-	Labels []struct {
+	Video bool `json:"-"`
+	// Research: a usage study that only collects comments (label gg:research).
+	// A person picks features from it later, so cs never starts a session on it.
+	Research bool `json:"-"`
+	Labels   []struct {
 		Name string `json:"name"`
 	} `json:"labels"`
 }
@@ -58,13 +61,16 @@ type Issue struct {
 // Waits reports whether the issue can't be worked on yet: a follow-up whose
 // issue or PR isn't merged, or whose date hasn't come.
 func (is Issue) Waits() bool {
-	return is.Video || is.WaitsFor > 0 || time.Now().Before(is.NotBefore)
+	return is.Video || is.Research || is.WaitsFor > 0 || time.Now().Before(is.NotBefore)
 }
 
 // WaitReason says what a waiting issue waits for, for the picker.
 func (is Issue) WaitReason() string {
 	if is.Video {
 		return "video request, made in GlitchRecord"
+	}
+	if is.Research {
+		return "research notes, no work to start"
 	}
 	if is.WaitsFor > 0 {
 		return fmt.Sprintf("waits for %s#%d to merge", is.WaitsRepo, is.WaitsFor)
@@ -88,14 +94,22 @@ const qaFailedLabel = "qa:failed"
 // videoLabel marks a video request (Glitchgrab's report triage puts it on).
 const videoLabel = "gg:video"
 
-// isVideoRequest reports whether the issue carries videoLabel.
-func isVideoRequest(is Issue) bool {
+// researchLabel marks an issue that only collects usage findings.
+const researchLabel = "gg:research"
+
+// hasLabel reports whether the issue carries the label.
+func hasLabel(is Issue, name string) bool {
 	for _, l := range is.Labels {
-		if l.Name == videoLabel {
+		if l.Name == name {
 			return true
 		}
 	}
 	return false
+}
+
+// isVideoRequest reports whether the issue carries videoLabel.
+func isVideoRequest(is Issue) bool {
+	return hasLabel(is, videoLabel)
 }
 
 // ListOpenIssues returns the open issues of the GitHub repo in dir, oldest
@@ -146,6 +160,7 @@ func ListOpenIssues(dir string) ([]Issue, error) {
 		issues[i].Title = strings.Join(strings.Fields(issues[i].Title), " ")
 		issues[i].NotBefore = dueDate(issues[i].Title, issues[i].Body)
 		issues[i].Video = isVideoRequest(issues[i])
+		issues[i].Research = hasLabel(issues[i], researchLabel)
 		for _, r := range followUpOf(issues[i].Title) {
 			if r.repo == "" && (issueOpen[r.n] || prOpen[r.n]) || r.repo != "" && otherRepoOpen(dir, r.repo, r.n) {
 				issues[i].WaitsFor, issues[i].WaitsRepo = r.n, r.repo
