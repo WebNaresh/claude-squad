@@ -10,6 +10,12 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 
 ## Display
 
+### Hindi text in one tile shifts borders and other tiles sideways
+- **Saw (2026-11-01):** on rows with Hindi in the left tile, the tile borders moved a few columns and the tiles to the right moved with them, cutting text at the screen edge ("then sa").
+- **Cause:** cs and Terminal.app count Devanagari mark widths differently, so the row drew wider than cs measured.
+- **Fix:** tile lines with non-ASCII text end with an absolute column move, so padding, border and the next tile start in the right place (`pinLineEnd`, `ui/grid.go`). The few Hindi letters past the tile edge are hidden. The spaced-out letters are how Terminal.app draws Hindi; cs can't change that.
+- **Guard:** `TestHindiRowsKeepBordersAligned`, `TestPinLineEndLeavesASCIIAlone` (`ui/grid_tile_test.go`), `TestPlaceOverlayKeepsDialogOnPinnedRow` (`ui/overlay/columnmove_test.go`).
+
 ### Doubled lines after cs updated itself
 - **Saw:** after a self-update, "Source Control" twice, tile bottoms repeated, the tab row cutting into the tiles, a key-bar line missing.
 - **Cause:** the new process drew without the alternate screen ("inline") over the old picture; every update shifted the picture and left stray lines.
