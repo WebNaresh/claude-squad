@@ -1,9 +1,11 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,4 +48,39 @@ func TestUniqueNames(t *testing.T) {
 		"glitchgrab · runner-3",
 		"claude-squad",
 	}, names)
+}
+
+func TestProjectTabs_QuietTabsLeaveTheRow(t *testing.T) {
+	tabs := NewProjectTabs()
+	tabs.SetWidth(120)
+	tabs.SetProjects([]string{"/c/busy", "/c/rare", "/c/monthly"}, "/c/busy")
+	tabs.SetQuiet(map[string]bool{"/c/rare": true, "/c/monthly": true})
+
+	row := tabs.String()
+	if strings.Contains(row, "rare") || strings.Contains(row, "monthly") {
+		t.Fatalf("quiet tabs in the row: %q", row)
+	}
+	if !strings.Contains(row, "⋯ 2 more") {
+		t.Fatalf("no more chip: %q", row)
+	}
+	if got := tabs.HitTest(strings.Index(ansi.Strip(row), "⋯")); got != HitMore {
+		t.Fatalf("chip click = %d, want HitMore", got)
+	}
+	if tabs.Next() != "/c/busy" || tabs.Prev() != "/c/busy" {
+		t.Fatal("arrows landed on a hidden tab")
+	}
+
+	// A session brings it back; the selected tab is never hidden.
+	tabs.SetCount("/c/rare", 1)
+	if got := tabs.HiddenProjects(); len(got) != 1 || got[0] != "/c/monthly" {
+		t.Fatalf("hidden after session: %v", got)
+	}
+	tabs.Select(2)
+	if !strings.Contains(tabs.String(), "monthly") {
+		t.Fatal("selected hidden tab not drawn")
+	}
+	tabs.Select(0) // leaving it hides it again
+	if strings.Contains(tabs.String(), "monthly") {
+		t.Fatal("tab stayed after leaving it")
+	}
 }
