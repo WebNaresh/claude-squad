@@ -302,6 +302,11 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Fix:** `reapLeftoverChildren` in `main.go` collects finished children at startup, before this run starts any of its own.
 - **Guard:** `ps -Ao ppid,stat | awk '$2 ~ /Z/'` under cs's pid should be near 0 after a self-update.
 
+### Rarely used projects filled the tab row (2026-11-01)
+- **Saw:** all 9 tabs always shown, including monthly-bill-breakup (used monthly) and others with nothing going on. Closing a tab was no answer: it leaves `open_projects`, so its issues stop being read and it can't come back on a new issue.
+- **Fix:** quiet projects (no open non-skipped issue, no session, no Claude in 7 days) sit behind `⋯ N more`; click it or ⌃Space R. They stay in `open_projects`. A project with auto off still has its issues read, for this. Files: `app/tabhide.go`, `ui/projecttabs.go`.
+- **Guard:** `TestProjectTabs_QuietTabsLeaveTheRow`, `TestReadQuietTabs`, `TestTabPickerFirstRowMatchesRender`.
+
 ### A closed project tab came straight back (abhyasika_turbo_repo, 2026-10-13)
 - **Saw:** Ctrl+Space x, Enter on the confirm: the tab stayed ("abhyasika_turbo_repo · 6 free"). It had appeared on its own: a Claude session started in a GitHub runner checkout (`~/github-runners/runner-1/_work/abhyasika_turbo_repo/…`) opened a temporary tab.
 - **Cause:** the close worked (`config.json` lost it), but the tab's docked terminal `csterm_abhyasika_turbo_repo` kept running, and every live session's folder gets a tab, a plain shell included.
