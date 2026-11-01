@@ -1,10 +1,13 @@
 package ui
 
 import (
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Every line of a tile, the top border with its title included, must be
@@ -73,5 +76,58 @@ func TestKeyBarKeepsHelpKey(t *testing.T) {
 		if !strings.Contains(bar, "all keys") || lipgloss.Width(bar) > w {
 			t.Errorf("width %d: %q (%d wide)", w, bar, lipgloss.Width(bar))
 		}
+	}
+}
+
+// A terminal that draws every Devanagari rune as one cell (Terminal.app comes
+// close) must still see each tile's borders in the same columns on every row.
+func TestHindiRowsKeepBordersAligned(t *testing.T) {
+	tiles := []GridTile{
+		{Title: "hindi", Content: "plain ascii\nसब सही लगे, तो बस 'इम्पोर्ट' पर क्लिक कर दीजिए।\nplain ascii"},
+		{Title: "other", Content: "right tile\nright tile\nright tile"},
+	}
+	const originX = 30
+	rows := strings.Split(RenderGrid(tiles, -1, 100, 12, originX), "\n")
+	cha := regexp.MustCompile(`\x1b\[(\d+)G`)
+	want := ""
+	for _, row := range rows[1 : len(rows)-1] {
+		col, got := originX, ""
+		for len(row) > 0 {
+			end := len(row)
+			m := cha.FindStringSubmatchIndex(row)
+			if m != nil {
+				end = m[0]
+			}
+			for _, r := range ansi.Strip(row[:end]) {
+				if r == '│' {
+					got += strconv.Itoa(col) + " "
+				}
+				col++
+			}
+			if m == nil {
+				break
+			}
+			col, _ = strconv.Atoi(row[m[2]:m[3]])
+			col--
+			row = row[m[1]:]
+		}
+		if want == "" {
+			want = got
+		}
+		if got != want {
+			t.Fatalf("border columns %q, want %q", got, want)
+		}
+	}
+	if len(strings.Fields(want)) != 4 {
+		t.Fatalf("expected 4 borders per row, got %q", want)
+	}
+}
+
+func TestPinLineEndLeavesASCIIAlone(t *testing.T) {
+	if got := pinLineEnd("plain", 5); got != "plain" {
+		t.Fatalf("ASCII line changed: %q", got)
+	}
+	if got := pinLineEnd("की", 5); !strings.HasSuffix(got, "\x1b[8G") {
+		t.Fatalf("got %q", got)
 	}
 }
