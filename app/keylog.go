@@ -178,6 +178,8 @@ func (m *home) stateName() string {
 	switch {
 	case m.state == stateIssuePicker:
 		where = "issue-picker"
+	case m.state == stateTabPicker:
+		where = "tab-picker"
 	case m.state == stateCommit:
 		where = "commit-box"
 	case m.state == stateConfirm:
