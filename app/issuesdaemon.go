@@ -156,7 +156,7 @@ func RunIssuesDaemon() error {
 				if e.Path != p && !strings.HasPrefix(e.Path, p+string(filepath.Separator)) {
 					continue
 				}
-				if closeNetworkDeadTile(e) {
+				if closeNetworkDeadTile(p, e) {
 					continue // no longer busy; started again after gaiRetryAfter
 				}
 				if n := session.IssueNumberOf(e.Name); n > 0 {
@@ -314,18 +314,34 @@ func gaiFailedRecently(project string, n int) bool {
 // failing. Keep it in step with _gai_gh_read's list in gai-tools `gai`.
 var gaiNetworkErr = regexp.MustCompile(`(?i)i/o timeout|dial tcp|error connecting to|connection (reset|refused)|tls handshake|no such host|network is unreachable|client\.timeout|unexpected eof|HTTP 50[234]|status code: 50[234]`)
 
+// deadChecked: when GitHub was last asked about a dead tile, by session name.
+var deadChecked = map[string]time.Time{}
+
+const deadCheckEvery = 5 * time.Minute
+
+var listDeadIssues = session.ListOpenIssues
+
 // closeNetworkDeadTile closes an issue tile whose gai died on a GitHub or
 // network error, and reports whether it did. Nothing can be done in such a
 // tile, and an open tile counts as busy, so the issue was stuck until someone
 // closed it by hand (#2987). Any other error stays on screen for the user: a
 // PR gai can't create, a login, a bad issue.
-func closeNetworkDeadTile(e *session.ExternalSession) bool {
+func closeNetworkDeadTile(project string, e *session.ExternalSession) bool {
 	n := session.IssueNumberOf(e.Name)
 	if n == 0 || e.Kind != session.KindTmux || !session.PaneDead(e.Name) {
 		return false
 	}
 	history := session.PaneHistory(e.Name)
-	if !gaiCanRetry(history) {
+	if !gaiCanRetry(history) || time.Since(deadChecked[e.Name]) < deadCheckEvery {
+		return false
+	}
+	// Ask GitHub, not the screen: another issue's gai can write this one onto
+	// the PR after its tile died (#2987). No answer keeps the tile too, so
+	// nothing is closed during an outage.
+	deadChecked[e.Name] = time.Now()
+	list, err := listDeadIssues(project)
+	if err != nil || !issueNotOnPR(list, n) {
+		logEvent("daemon: #%d: dead tile kept (on a PR, or GitHub didn't answer: %v)", n, err)
 		return false
 	}
 	if err := session.KillSession(e.Name); err != nil {
@@ -334,6 +350,17 @@ func closeNetworkDeadTile(e *session.ExternalSession) bool {
 	}
 	logEvent("daemon: #%d: gai died on a GitHub error, tile closed, starts again when a slot is free (at most every %s): %s", n, gaiRetryAfter, gaiLastWords(history))
 	return true
+}
+
+// issueNotOnPR reports whether issue n is open and on no PR, so the runner
+// starts it again once its tile closes.
+func issueNotOnPR(list []session.Issue, n int) bool {
+	for _, is := range list {
+		if is.Number == n {
+			return is.PR == 0
+		}
+	}
+	return false
 }
 
 // gaiCanRetry reports whether a dead gai's screen shows a failure that
