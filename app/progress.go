@@ -174,6 +174,8 @@ func (m *home) renderProgress(width int) string {
 			// The branch's PR closes no issue (gai pr from dev with no "Closes #N"),
 			// so no issue maps to it: still show it instead of "no open PR yet".
 			parts = append(parts, progLabel.Render(fmt.Sprintf("PR #%d ", e.pr.Number))+progLabel.Render("open"))
+		} else if prUnclear(m.issueCache[project]) {
+			parts = append(parts, progLabel.Render("which PR? gai asks in its tile"))
 		} else {
 			parts = append(parts, progLabel.Render("no open PR yet"))
 		}
