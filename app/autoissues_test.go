@@ -12,6 +12,7 @@ import (
 	"claude-squad/ui"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // autoHome is a home with one auto project running `running` Claude
@@ -33,7 +34,7 @@ func autoHome(t *testing.T, running, inPR, open int) (*home, string) {
 	m.list.SetProject(project)
 	var issues []session.Issue
 	for i := 0; i < inPR; i++ {
-		issues = append(issues, session.Issue{Number: 100 + i, PR: 951})
+		issues = append(issues, session.Issue{Number: 100 + i, PR: 951, GatherPR: 951})
 	}
 	for i := 0; i < open; i++ {
 		issues = append(issues, session.Issue{Number: 200 + i})
@@ -96,13 +97,76 @@ func TestAutoOtherTabGetsBadgeNotPicker(t *testing.T) {
 	}
 }
 
-// A bot's PR (the GitHub Claude app's own fix) is never where this project's
-// issues are gathered, even when it closes the most issues.
-func TestPRRoomIgnoresBotPRs(t *testing.T) {
-	issues := []session.Issue{{Number: 1, PR: 2209, PRBot: true}, {Number: 2, PR: 2209, PRBot: true}, {Number: 3, PR: 2306}}
+// The room is the chosen PR's: another PR's issues, however many, neither
+// win nor hold the batch back (glitchgrab #766 vs #779, gai-tools #79).
+func TestPRRoomCountsOnlyTheChosenPR(t *testing.T) {
+	issues := []session.Issue{{Number: 1, PR: 766, GatherPR: 779}, {Number: 2, PR: 766, GatherPR: 779},
+		{Number: 3, PR: 779, GatherPR: 779}, {Number: 4, GatherPR: 779}}
 	room, pr := prRoom(issues)
-	if pr != 2306 || room != autoMaxPerPR-1 {
-		t.Errorf("prRoom = room %d, PR #%d; want PR #2306 with room %d", room, pr, autoMaxPerPR-1)
+	if pr != 779 || room != autoMaxPerPR-1 {
+		t.Errorf("prRoom = room %d, PR #%d; want PR #779 with room %d", room, pr, autoMaxPerPR-1)
+	}
+}
+
+// Nothing chosen: no target, so gai's menu gets no keys.
+func TestPRRoomNoChoiceNoTarget(t *testing.T) {
+	issues := []session.Issue{{Number: 1, PR: 766, PRUnclear: true}, {Number: 2, PRUnclear: true}}
+	if room, pr := prRoom(issues); pr != 0 || room != autoMaxPerPR {
+		t.Errorf("prRoom = room %d, PR #%d; want no PR", room, pr)
+	}
+	if !prUnclear(issues) {
+		t.Error("prUnclear = false")
+	}
+	if keys, ok := prKeys("Multiple open PRs — select one:\n  ▶ #766: @x · feat · 2026-11-01 · 1 issue · t\n    #779: @me · dev · 2026-11-02 · no issues · t", 0); ok {
+		t.Errorf("prKeys sent %v with no target", keys)
+	}
+}
+
+// gai's question for a teammate's lone PR counts as asking, so it gets no keys
+// and reaches the user like the several-PRs one.
+func TestGaiAsksPR(t *testing.T) {
+	for screen, want := range map[string]bool{
+		"Multiple open PRs — select one:":                  true,
+		"The only open PR is someone else's — confirm it:": true,
+		"→ Attaching #1 to PR #779":                        false,
+	} {
+		if got := gaiAsksPR(screen); got != want {
+			t.Errorf("gaiAsksPR(%q) = %v", screen, got)
+		}
+	}
+}
+
+// While only the user can say which PR, one tile asks: more would each sit on
+// the same question. The strip says so instead of "no open PR yet".
+func TestUnclearPROffersOneAndSaysSo(t *testing.T) {
+	m, project := autoHome(t, 0, 0, 3)
+	for i := range m.issueCache[project] {
+		m.issueCache[project][i].PRUnclear = true
+	}
+	m.progress = loadProgress()
+	m.stepAuto()
+	if m.issuePicker == nil || m.issuePicker.TickLimit != 1 {
+		t.Fatalf("want an offer of one issue, got picker=%v", m.issuePicker != nil)
+	}
+	if plain := ansi.Strip(m.renderProgress(160)); !strings.Contains(plain, "which PR?") {
+		t.Errorf("strip %q doesn't say gai is asking", plain)
+	}
+}
+
+// Enter on gai's [y/N] for someone else's PR is the safe no; left unanswered
+// it stalled a removal until the tile was killed.
+func TestGaiPromptIncludesNoDefault(t *testing.T) {
+	if !isGaiPrompt("PR #766 is @x's. Rewrite its title and body too? [y/N] ") {
+		t.Error("[y/N] prompt not answered")
+	}
+}
+
+// gai's new rows, with the author and branch before the title, still parse.
+func TestPRKeysReadsRowsWithAuthorAndBranch(t *testing.T) {
+	screen := "Multiple open PRs — select one:\n  ▶ #779: @me · dev · 2026-11-02 · no issues · batch\n    #766: @x · feat/763 · 2026-11-01 · 1 issue · booking"
+	keys, ok := prKeys(screen, 766)
+	if !ok || len(keys) != 2 || keys[0] != "Down" || keys[1] != "Enter" {
+		t.Errorf("prKeys = %v, %v", keys, ok)
 	}
 }
 
@@ -128,14 +192,27 @@ func TestMergedPRIssuesAreTaken(t *testing.T) {
 func TestJoiningTakesPRRoom(t *testing.T) {
 	var issues []session.Issue
 	for n := 1; n <= 14; n++ {
-		issues = append(issues, session.Issue{Number: n, PR: 2435})
+		issues = append(issues, session.Issue{Number: n, PR: 2435, GatherPR: 2435})
 	}
-	issues = append(issues, session.Issue{Number: 2414}, session.Issue{Number: 2415})
+	issues = append(issues, session.Issue{Number: 2414, GatherPR: 2435}, session.Issue{Number: 2415, GatherPR: 2435})
 	room, pr := prRoom(issues)
 	if pr != 2435 || room != 1 {
 		t.Fatalf("prRoom = %d, #%d; want 1, #2435", room, pr)
 	}
 	if room -= joining(issues, map[int]bool{2414: true}); room != 0 {
 		t.Fatalf("room with #2414 starting = %d, want 0", room)
+	}
+}
+
+// A project at its session limit still loads its list: after a cs restart the
+// strip above the tiles has nothing else to show the PR and open counts from.
+func TestAutoFullProjectStillLoadsItsList(t *testing.T) {
+	m, project := autoHome(t, autoMaxSessions, 8, 3)
+	// As after a restart: no list in memory, none fetched yet.
+	delete(m.issueCache, project)
+	delete(m.autoFetched, project)
+	m.autoCheck()
+	if m.autoFetched[project].IsZero() {
+		t.Error("project at its limit never loads its issues, so the strip stays without PR and open counts")
 	}
 }
