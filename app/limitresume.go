@@ -43,23 +43,126 @@ func limitReset(screen string, now time.Time) (time.Time, string, bool) {
 			continue
 		}
 		m := limitRe.FindStringSubmatch(strings.ToLower(notice))
-		h, _ := strconv.Atoi(m[1])
-		min := 0
-		if m[2] != "" {
-			min, _ = strconv.Atoi(m[2])
-		}
-		if m[3] == "pm" && h != 12 {
-			h += 12
-		} else if m[3] == "am" && h == 12 {
-			h = 0
-		}
-		at := time.Date(now.Year(), now.Month(), now.Day(), h, min, 0, 0, now.Location())
-		if now.Sub(at) > 12*time.Hour {
-			at = at.AddDate(0, 0, 1)
-		}
+		at := resetTime(m[1], m[2], m[3], now)
 		return at, notice, true
 	}
 	return time.Time{}, "", false
+}
+
+// resetTime turns the hour, minutes and am/pm of a limit notice into a time.
+// A time already passed by more than 12 hours means tomorrow.
+func resetTime(hour, minute, ampm string, now time.Time) time.Time {
+	h, _ := strconv.Atoi(hour)
+	min := 0
+	if minute != "" {
+		min, _ = strconv.Atoi(minute)
+	}
+	if ampm == "pm" && h != 12 {
+		h += 12
+	} else if ampm == "am" && h == 12 {
+		h = 0
+	}
+	at := time.Date(now.Year(), now.Month(), now.Day(), h, min, 0, 0, now.Location())
+	if now.Sub(at) > 12*time.Hour {
+		at = at.AddDate(0, 0, 1)
+	}
+	return at
+}
+
+// Since 2026-11 Claude can finish its turn at the limit ("wrap-up") instead of
+// printing a "hit your limit" line, and tells the user to say continue. The
+// only sign is the footer below the input box, which wraps in a narrow tile:
+// "⚠ Usage limit reached · wrapping up · limit resets 3:20pm · clau.de/wrap-up".
+var wrapUpRe = regexp.MustCompile(`usage limit reached[^⏵]*?limit resets (\d{1,2})(?::(\d{2}))?\s*([ap]m)`)
+
+// footerBelowBox returns the lines below Claude's input box, joined.
+func footerBelowBox(screen string) string {
+	lines := strings.Split(screen, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "❯") {
+			var footer []string
+			for _, l := range lines[i+1:] {
+				footer = append(footer, strings.TrimSpace(l))
+			}
+			return strings.ToLower(strings.Join(footer, " "))
+		}
+	}
+	return ""
+}
+
+// wrapUpLimit reads the footer: when the limit shown there resets, and whether
+// the status line says this tile is finished ("✓ done · close session").
+func wrapUpLimit(screen string, now time.Time) (at time.Time, finished, ok bool) {
+	footer := footerBelowBox(screen)
+	m := wrapUpRe.FindStringSubmatch(footer)
+	if m == nil {
+		return time.Time{}, false, false
+	}
+	return resetTime(m[1], m[2], m[3], now), strings.Contains(footer, "✓ done"), true
+}
+
+// continuedAfterSwitch reads a tile's scroll-back: switched is whether the
+// account-switch notice is there, continued whether "continue" was sent below
+// it. Both come from the screen, so a cs restart can't repeat the continue.
+func continuedAfterSwitch(history string) (switched, continued bool) {
+	lines := strings.Split(history, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if isAccountSwitch(lines, i) {
+			return true, continued
+		}
+		l := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(l, "❯") && strings.Contains(l, "continue") {
+			continued = true
+		}
+	}
+	return false, continued
+}
+
+// wrapUpDue says whether a tile on the footer limit should get continue now:
+// straight after an account switch it hasn't continued from, else at the reset.
+// A continue from an earlier switch only rules out the first case: this limit
+// can be a later one, on the new account.
+func wrapUpDue(switched, continued bool, at, now time.Time) bool {
+	return (switched && !continued) || !now.Before(at.Add(limitMargin))
+}
+
+// resumeWrapUp types "continue" into a tile stopped by the footer limit:
+// right away when the account changed since (the new account has its own
+// limit), else once the limit resets. handled says the footer limit applied,
+// so the older "hit your limit" rule has nothing to do here.
+func resumeWrapUp(e *session.ExternalSession, screen string, done map[string]bool, now time.Time, due func(time.Time)) (handled bool) {
+	at, finished, ok := wrapUpLimit(screen, now)
+	if !ok {
+		return false
+	}
+	// Mid-turn: wait for it to stop. A background shell keeps a stopped tile
+	// "busy" (#2231), so that alone doesn't count as working.
+	if finished || (e.Status == "busy" && !strings.Contains(footerBelowBox(screen), " shell")) {
+		return true
+	}
+	key := e.Name + "|wrapup|" + at.Format(time.RFC3339)
+	if done[key] {
+		return true
+	}
+	switched, continued := continuedAfterSwitch(session.PaneHistory(e.Live))
+	if !wrapUpDue(switched, continued, at, now) {
+		due(at.Add(limitMargin))
+		return true
+	}
+	// As in the older rule: finish a half-typed "co", leave any other draft.
+	typed, hasPrompt := promptText(e.Live)
+	rest, isContinue := continueRest(typed)
+	if !hasPrompt || !isContinue {
+		return true
+	}
+	done[key] = true
+	_ = session.PressKeys(e.Live, rest)
+	if switched && !continued {
+		logEvent("daemon: %s: wrap-up limit on the old account, typed continue", e.Name)
+	} else {
+		logEvent("daemon: %s: wrap-up limit reset (%s), typed continue", e.Name, at.Format("15:04"))
+	}
+	return true
 }
 
 // isLimitNotice reports whether line i is Claude's own limit notice: a
@@ -99,12 +202,28 @@ func isStep(l string) bool {
 	return strings.HasPrefix(l, "●") || strings.HasPrefix(l, "⏺")
 }
 
-// isAccountSwitch reports whether a step line is Claude's notice that the
+// isAccountSwitch reports whether line i starts Claude's notice that the
 // signed-in claude.ai account changed (the user ran /login for another
 // subscription): "Remote Control disconnected — signed-in claude.ai account
-// or organization changed on this machine …".
-func isAccountSwitch(l string) bool {
-	return isStep(l) && strings.Contains(l, "Remote Control disconnected — signed-in")
+// or organization changed on this machine …". Claude wraps the notice itself,
+// so tmux can't join it: in a 47-column tile "signed-in" lands on the next
+// line, and the first line read alone never matched.
+func isAccountSwitch(lines []string, i int) bool {
+	// A step starts at column 0. Indented, it is the notice quoted in tool
+	// output (a tile that read another tile's screen), which once made the
+	// runner type /remote-control into that tile too.
+	notice := strings.TrimRight(lines[i], " ")
+	if !isStep(notice) {
+		return false
+	}
+	for j := i + 1; j < len(lines) && j <= i+3; j++ {
+		next := strings.TrimSpace(lines[j])
+		if next == "" || isStep(next) {
+			break
+		}
+		notice += " " + next
+	}
+	return strings.Contains(notice, "Remote Control disconnected — signed-in")
 }
 
 // limitIsLast reports whether nothing happened after the latest limit line:
@@ -114,7 +233,8 @@ func isAccountSwitch(l string) bool {
 // A message sent below it ("❯ continue", other than the input box, which is
 // the last ❯ line) also means Claude took it: refused, it would print a new
 // limit line below. Without this, a continue Claude was still thinking on
-// 90s later looked refused and got a second one.
+// 90s later looked refused and got a second one. A slash command (/login,
+// /remote-control) isn't a message: it goes to Claude Code, not the model.
 func limitIsLast(screen string) bool {
 	lines := strings.Split(screen, "\n")
 	inputBox := -1
@@ -129,10 +249,10 @@ func limitIsLast(screen string) bool {
 		if isLimitNotice(lines, i) {
 			return true
 		}
-		if isStep(l) && !isAccountSwitch(l) {
+		if isStep(l) && !isAccountSwitch(lines, i) {
 			return false
 		}
-		if i != inputBox && strings.HasPrefix(l, "❯") && strings.TrimSpace(strings.TrimPrefix(l, "❯")) != "" {
+		if sent := strings.TrimSpace(strings.TrimPrefix(l, "❯")); i != inputBox && strings.HasPrefix(l, "❯") && sent != "" && !strings.HasPrefix(sent, "/") {
 			return false
 		}
 	}
@@ -141,12 +261,23 @@ func limitIsLast(screen string) bool {
 
 // switchedAccount reports whether the last step on the screen is the
 // account-switch notice: the user signed in to another subscription since
-// this session last did anything.
+// this session last did anything. /remote-control below the notice means it
+// was already handled: the command prints no step, so without this check
+// every cs restart (which clears the runner's memory) typed it again.
 func switchedAccount(screen string) bool {
 	lines := strings.Split(screen, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
-		if l := strings.TrimSpace(lines[i]); isStep(l) {
-			return isAccountSwitch(l)
+		l := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(l, "❯") && strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(l, "❯")), "/remote-control") {
+			return false
+		}
+		// The tile /login ran in: its own output can push the notice off a
+		// short tile's screen.
+		if strings.HasPrefix(l, "⎿") && strings.HasSuffix(l, "Login successful") {
+			return true
+		}
+		if isStep(l) {
+			return isAccountSwitch(lines, i)
 		}
 	}
 	return false
@@ -218,6 +349,11 @@ func resumeAfterLimit(sessions []*session.ExternalSession, done map[string]bool,
 				done[e.Name+"|"+at.Format(time.RFC3339)] = true
 				logEvent("daemon: %s: usage limit on the old account, typed continue", e.Name)
 			}
+			continue
+		}
+		// A "hit your limit" line keeps its own rule below: it finishes a
+		// half-typed "co" and retries a continue sent too early.
+		if !(ok && limitIsLast(screen)) && resumeWrapUp(e, screen, done, now, due) {
 			continue
 		}
 		// promptEmpty (livepane.go) reads the colours: the greyed suggestion
