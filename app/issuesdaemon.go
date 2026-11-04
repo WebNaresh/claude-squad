@@ -315,7 +315,7 @@ func stepDaemonJob(j *daemonJob, issues []session.Issue) bool {
 	switch {
 	case !alive || session.PaneDead(j.name):
 		logEvent("daemon: gai issue #%d stopped before Claude started; its tile keeps what gai said: %s",
-			j.issue.Number, gaiLastWords(session.PaneScreen(j.name)))
+			j.issue.Number, gaiLastWords(session.PaneHistory(j.name)))
 		gaiFailed[fmt.Sprint(j.project, "#", j.issue.Number)] = time.Now()
 		return true
 	case time.Since(j.started) > issueJobTimeout:
