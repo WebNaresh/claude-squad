@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -154,6 +155,9 @@ func RunIssuesDaemon() error {
 			for _, e := range sessions {
 				if e.Path != p && !strings.HasPrefix(e.Path, p+string(filepath.Separator)) {
 					continue
+				}
+				if closeNetworkDeadTile(e) {
+					continue // no longer busy; started again after gaiRetryAfter
 				}
 				if n := session.IssueNumberOf(e.Name); n > 0 {
 					busy[n] = true
@@ -304,6 +308,50 @@ var alertUser = func(text string) {
 func gaiFailedRecently(project string, n int) bool {
 	at, ok := gaiFailed[fmt.Sprint(project, "#", n)]
 	return ok && time.Since(at) < gaiRetryAfter
+}
+
+// gaiNetworkErr matches what gh prints when GitHub can't be reached or is
+// failing. Keep it in step with _gai_gh_read's list in gai-tools `gai`.
+var gaiNetworkErr = regexp.MustCompile(`(?i)i/o timeout|dial tcp|error connecting to|connection (reset|refused)|tls handshake|no such host|network is unreachable|client\.timeout|unexpected eof|HTTP 50[234]|status code: 50[234]`)
+
+// closeNetworkDeadTile closes an issue tile whose gai died on a GitHub or
+// network error, and reports whether it did. Nothing can be done in such a
+// tile, and an open tile counts as busy, so the issue was stuck until someone
+// closed it by hand (#2987). Any other error stays on screen for the user: a
+// PR gai can't create, a login, a bad issue.
+func closeNetworkDeadTile(e *session.ExternalSession) bool {
+	n := session.IssueNumberOf(e.Name)
+	if n == 0 || e.Kind != session.KindTmux || !session.PaneDead(e.Name) {
+		return false
+	}
+	history := session.PaneHistory(e.Name)
+	if !gaiCanRetry(history) {
+		return false
+	}
+	if err := session.KillSession(e.Name); err != nil {
+		logEvent("daemon: could not close dead tile %s: %v", e.Name, err)
+		return false
+	}
+	logEvent("daemon: #%d: gai died on a GitHub error, tile closed, starts again when a slot is free (at most every %s): %s", n, gaiRetryAfter, gaiLastWords(history))
+	return true
+}
+
+// gaiCanRetry reports whether a dead gai's screen shows a failure that
+// starting the issue again can fix. Not once gai attached the issue: the
+// runner skips issues on a PR, so a closed tile would lose it for good. Not
+// when the failure is local (Ollama on localhost): it needs the user.
+func gaiCanRetry(history string) bool {
+	if strings.Contains(history, "✓ Attached ") {
+		return false
+	}
+	words := gaiLastWords(history)
+	low := strings.ToLower(words)
+	for _, local := range []string{"localhost", "127.0.0.1", "ollama"} {
+		if strings.Contains(low, local) {
+			return false
+		}
+	}
+	return gaiNetworkErr.MatchString(words)
 }
 
 // gaiLastWords returns the last few lines gai printed, for the log.
