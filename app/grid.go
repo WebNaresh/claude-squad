@@ -271,7 +271,11 @@ func captureTile(j gridJob, w, h int) ui.GridTile {
 	}
 	dropped := 0
 	if !tmux.IsScrolled(name) {
-		t.Content, dropped = fillFromHistory(name, t.Content)
+		if dead, ok := deadPaneContent(name, t.Content, h); ok {
+			t.Content = dead
+		} else {
+			t.Content, dropped = fillFromHistory(name, t.Content)
+		}
 	}
 	if strings.Contains(ansi.Strip(t.Content), "Save and close editor to continue") {
 		// Claude opened the prompt in an editor (Ctrl+G) and reads nothing
@@ -318,6 +322,56 @@ func fillFromHistory(name, content string) (string, int) {
 		}
 	}
 	return strings.Join(append(above, lines[:rows]...), "\n") + "\n", blank
+}
+
+// deadPaneContent rebuilds the tile of a pane whose program exited (kept by
+// remain-on-exit, e.g. gai failing before Claude starts). tmux writes
+// "Pane is dead" on the pane's last row; when cs then shrinks the pane to its
+// tile, the rows above, gai's error included, go into the scroll-back, and
+// the tile showed only blank rows over "Pane is dead" (abhyaiska #1103/#1105,
+// 2026-11-03). The scroll-back is read back with the blank gap dropped.
+func deadPaneContent(name, content string, h int) (string, bool) {
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	rows := contentRows(content)
+	if rows == 0 || !strings.HasPrefix(strings.TrimSpace(ansi.Strip(lines[rows-1])), "Pane is dead") {
+		return "", false
+	}
+	if rows >= 2 && strings.TrimSpace(ansi.Strip(lines[rows-2])) != "" {
+		return "", false // text right above it: nothing pushed away
+	}
+	// Not -J: the tile is the pane's width, so wrapped rows stay rows.
+	out, err := exec.Command("tmux", "capture-pane", "-p", "-e", "-S", "-", "-t", name).Output()
+	if err != nil {
+		return "", false
+	}
+	return strings.Join(compactDead(strings.Split(strings.TrimSuffix(string(out), "\n"), "\n"), h), "\n") + "\n", true
+}
+
+// compactDead drops the blank rows right above the last "Pane is dead" line
+// (one stays as a gap) and keeps the last h rows.
+func compactDead(all []string, h int) []string {
+	blank := func(s string) bool { return strings.TrimSpace(ansi.Strip(s)) == "" }
+	end := len(all)
+	for end > 0 && blank(all[end-1]) {
+		end--
+	}
+	if end == 0 {
+		return nil
+	}
+	dead := all[end-1]
+	top := end - 1
+	for top > 0 && blank(all[top-1]) {
+		top--
+	}
+	out := append([]string{}, all[:top]...)
+	if top > 0 {
+		out = append(out, "")
+	}
+	out = append(out, dead)
+	if h > 0 && len(out) > h {
+		out = out[len(out)-h:]
+	}
+	return out
 }
 
 // cursorInto draws the cursor into a tile when it's the session being typed into.
