@@ -4,6 +4,7 @@ import (
 	"claude-squad/session"
 	"claude-squad/session/tmux"
 	"claude-squad/ui"
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -106,7 +107,22 @@ func TestCloseNetworkDeadTile(t *testing.T) {
 	const name = "cc_deadtest_i2"
 	deadTmux(t, name, "non-200 OK status code: 502 Bad Gateway")
 	e := &session.ExternalSession{Name: name, Kind: session.KindTmux}
-	if !closeNetworkDeadTile(e) {
+	listDeadIssues = func(string) ([]session.Issue, error) { return []session.Issue{{Number: 2, PR: 9}}, nil }
+	t.Cleanup(func() { listDeadIssues = session.ListOpenIssues; delete(deadChecked, name) })
+	if closeNetworkDeadTile("/tmp/deadtest", e) {
+		t.Fatal("closed a tile whose issue is on a PR: it would never start again")
+	}
+	listDeadIssues = func(string) ([]session.Issue, error) { return nil, errors.New("502") }
+	delete(deadChecked, name)
+	if closeNetworkDeadTile("/tmp/deadtest", e) {
+		t.Fatal("closed with GitHub down")
+	}
+	if closeNetworkDeadTile("/tmp/deadtest", e) {
+		t.Fatal("asked GitHub again at once")
+	}
+	listDeadIssues = func(string) ([]session.Issue, error) { return []session.Issue{{Number: 2}}, nil }
+	delete(deadChecked, name)
+	if !closeNetworkDeadTile("/tmp/deadtest", e) {
 		t.Fatal("not closed")
 	}
 	if exec.Command("tmux", "has-session", "-t", "="+name).Run() == nil {
@@ -138,7 +154,7 @@ func TestDeadTileOtherErrorStays(t *testing.T) {
 	const name = "cc_deadtest_i3"
 	deadTmux(t, name, "error: gh CLI not authenticated")
 	e := &session.ExternalSession{Name: name, Kind: session.KindTmux}
-	if closeNetworkDeadTile(e) {
+	if closeNetworkDeadTile("/tmp/deadtest", e) {
 		t.Fatal("closed a tile the user must read")
 	}
 	if exec.Command("tmux", "has-session", "-t", "="+name).Run() != nil {
