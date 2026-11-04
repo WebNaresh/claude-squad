@@ -276,6 +276,14 @@ func captureTile(j gridJob, w, h int) ui.GridTile {
 		} else {
 			t.Content, dropped = fillFromHistory(name, t.Content)
 		}
+	} else if dead, ok := deadPaneContent(name, t.Content, h); ok && session.PaneDead(name) {
+		t.Content = dead
+	} else if contentRows(t.Content) == 0 && session.PaneDead(name) {
+		// Wheel-scrolled onto the blank rows of a dead pane: the tile said
+		// "Nothing on screen yet" over gai's error (#2987, 2026-11-04).
+		if dead, ok := deadPaneHistory(name, h); ok {
+			t.Content = dead
+		}
 	}
 	if strings.Contains(ansi.Strip(t.Content), "Save and close editor to continue") {
 		// Claude opened the prompt in an editor (Ctrl+G) and reads nothing
@@ -339,6 +347,12 @@ func deadPaneContent(name, content string, h int) (string, bool) {
 	if rows >= 2 && strings.TrimSpace(ansi.Strip(lines[rows-2])) != "" {
 		return "", false // text right above it: nothing pushed away
 	}
+	return deadPaneHistory(name, h)
+}
+
+// deadPaneHistory is a dead pane's whole history with the blank gap dropped,
+// cut to h rows.
+func deadPaneHistory(name string, h int) (string, bool) {
 	// Not -J: the tile is the pane's width, so wrapped rows stay rows.
 	out, err := exec.Command("tmux", "capture-pane", "-p", "-e", "-S", "-", "-t", name).Output()
 	if err != nil {
