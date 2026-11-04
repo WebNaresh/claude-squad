@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -180,16 +179,15 @@ func RunIssuesDaemon() error {
 				issues[p], issuesAt[p] = list, time.Now()
 				writeIssueCache(p, list) // the window's strip reads it
 			}
+			// Includes a PR of yours from the checked-out branch that lists no
+			// issues yet (gai's body can come out without "Closes #…", like
+			// glitchgrab #577): the batch keeps going on it with no branch switch.
 			room, pr := prRoom(issues[p])
-			// A PR already open from the checked-out branch is this batch's
-			// PR even when it lists no issues yet (gai's body can come out
-			// without "Closes #…", like glitchgrab #577): keep going on it,
-			// with no branch switch. Without this, the batch waited for the
-			// cleanup, which waits for every session to close.
-			if pr == 0 {
-				if n := openPRHere(p); n > 0 {
-					pr, room = n, autoMaxPerPR
-				}
+			unclear := prUnclear(issues[p])
+			// gai's question is already waiting in a tile: more tiles would
+			// only ask it again.
+			if unclear && time.Since(prAsked[p]) < gaiRetryAfter {
+				continue
 			}
 			room -= joining(issues[p], busy)
 			if room <= 0 {
@@ -217,7 +215,8 @@ func RunIssuesDaemon() error {
 			// up-to-date main, not the merged branch (batchbase.go). Only when
 			// an issue is about to start; once its PR exists, the batch
 			// continues on that branch.
-			if pr == 0 && !ready[p] {
+			// Not when PRs are open and only you can say which: that isn't a new batch.
+			if pr == 0 && !unclear && !ready[p] {
 				// Switching branches under a working session moved its
 				// commits onto main (practice-stack, 6 Oct 11:12: "1 running",
 				// tree clean for that moment). The switch waits until no
@@ -261,6 +260,9 @@ func RunIssuesDaemon() error {
 				delete(ready, p) // the next time no PR is open, clean up again
 			}
 			n := min(free, room)
+			if unclear {
+				n = min(n, 1) // one tile asks; the rest wait for its answer
+			}
 			for _, is := range issues[p] {
 				if n == 0 {
 					break
@@ -290,6 +292,14 @@ func RunIssuesDaemon() error {
 var gaiFailed = map[string]time.Time{}
 
 const gaiRetryAfter = 30 * time.Minute
+
+// prAsked: when gai's "which PR" was last left for the user, per project.
+var prAsked = map[string]time.Time{}
+
+// alertUser shows a macOS notification; best effort, the tile still waits.
+var alertUser = func(text string) {
+	_ = exec.Command("osascript", "-e", fmt.Sprintf("display notification %q with title \"claude-squad\"", text)).Run()
+}
 
 func gaiFailedRecently(project string, n int) bool {
 	at, ok := gaiFailed[fmt.Sprint(project, "#", n)]
@@ -325,7 +335,7 @@ func stepDaemonJob(j *daemonJob, issues []session.Issue) bool {
 		if j.answered != "pr" {
 			j.answered = "pr"
 			screen := session.PaneScreen(j.name)
-			if !strings.Contains(screen, "Multiple open PRs") {
+			if !gaiAsksPR(screen) {
 				return false
 			}
 			target := 0
@@ -337,6 +347,8 @@ func stepDaemonJob(j *daemonJob, issues []session.Issue) bool {
 				logEvent("daemon: #%d picked PR #%d", j.issue.Number, target)
 			} else {
 				logEvent("daemon: #%d gai asks which PR; none of this project's in its list, left in its tile", j.issue.Number)
+				prAsked[j.project] = time.Now()
+				alertUser(fmt.Sprintf("%s #%d: pick a PR in its tile", filepath.Base(j.project), j.issue.Number))
 			}
 		}
 	case isGaiPrompt(line) && line != j.answered:
@@ -376,21 +388,6 @@ func modTime(path string) time.Time {
 		return st.ModTime()
 	}
 	return time.Time{}
-}
-
-// openPRHere is the open PR from the project's checked-out branch, or 0.
-func openPRHere(project string) int {
-	out, err := exec.Command("git", "-C", project, "branch", "--show-current").Output()
-	cur := strings.TrimSpace(string(out))
-	if err != nil || cur == "" {
-		return 0
-	}
-	n, err := openPRFrom(project, cur)
-	if err != nil {
-		return 0
-	}
-	v, _ := strconv.Atoi(n)
-	return v
 }
 
 // onDefaultBranch reports whether project has its default branch (origin's
