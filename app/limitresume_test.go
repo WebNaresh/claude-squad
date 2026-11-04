@@ -59,6 +59,31 @@ func TestAccountSwitch(t *testing.T) {
 	if !limitIsLast(screen) {
 		t.Error("the switch notice counted as a new step after the limit")
 	}
+	// A 47-column tile: Claude wraps the notice, "signed-in" on the next line.
+	wrapped := limit + "⏺ Remote Control disconnected —                \n  signed-in claude.ai account or \n  organization changed on this machine\n  /remote-control\n\n❯ /login\n  ⎿  Login successful\n\n❯ \n"
+	if !switchedAccount(wrapped) {
+		t.Error("notice wrapped in a narrow tile, but no switch seen")
+	}
+	if !limitIsLast(wrapped) {
+		t.Error("the wrapped switch notice counted as a new step after the limit")
+	}
+	// Narrower still: "disconnected —" alone on its own line.
+	if !switchedAccount("⏺ Remote Control\n  disconnected —\n  signed-in claude.ai\n\n❯ \n") {
+		t.Error("notice wrapped twice, but no switch seen")
+	}
+	// The tile /login ran in, notice pushed off its short screen.
+	if !switchedAccount("❯ /login\n  ⎿  Login successful\n\n❯ \n") {
+		t.Error("/login finished here, but no switch seen")
+	}
+	// Quoted in tool output, indented: not this tile's notice.
+	if switchedAccount("⏺ Bash(tmux capture-pane)\n  ⎿  ok\n     ⏺ Remote Control disconnected — signed-in claude.ai\n\n❯ \n") {
+		t.Error("a quoted notice seen as this tile's switch")
+	}
+	// Already handled: /remote-control prints no step, and a cs restart
+	// forgets what it typed.
+	if switchedAccount(notice + "❯ /remote-control\n\n  /remote-control is active\n\n❯ /reload-plugins\n  ⎿  Reloaded\n\n❯ \n") {
+		t.Error("/remote-control already typed, but still seen as just switched")
+	}
 	// After /remote-control and continue: Claude works again, no switch.
 	if switchedAccount(screen + "⏺ Bash(go test)\n❯ \n") {
 		t.Error("a later step, but still seen as just switched")
@@ -96,5 +121,58 @@ func TestLimitResetWrapped(t *testing.T) {
 	}
 	if !limitIsLast(screen) {
 		t.Error("stopped on a wrapped limit, but not seen as last")
+	}
+}
+
+func TestWrapUpLimit(t *testing.T) {
+	now := time.Date(2026, 11, 4, 14, 0, 0, 0, time.Local)
+	want := time.Date(2026, 11, 4, 15, 20, 0, 0, time.Local)
+	for _, screen := range []string{
+		"❯ \n───\n  ⚠ Usage limit reached · limit resets 3:20pm\n  · clau.de/wrap-up · /upgrade to keep using\n  Claude Code\n  🟡 [CAVEMAN] #2983\n",
+		"❯ \n───\n  ⚠ Usage limit reached · wrapping up · limit\n  resets 3:20pm · clau.de/wrap-up · /upgrade\n",
+	} {
+		if at, finished, ok := wrapUpLimit(screen, now); !ok || finished || !at.Equal(want) {
+			t.Errorf("got %v %v %v for %q", at, finished, ok, screen)
+		}
+	}
+	if _, finished, ok := wrapUpLimit("❯ \n  ⚠ Usage limit reached · limit resets 3:20pm\n  🟡 #2980 ✓ done · close session\n", now); !ok || !finished {
+		t.Error("finished tile not seen")
+	}
+	// The same words in the conversation, above the input box, aren't the footer.
+	if _, _, ok := wrapUpLimit("⏺ Usage limit reached · limit resets 3:20pm\n❯ \n  auto mode on\n", now); ok {
+		t.Error("quoted footer seen as the limit")
+	}
+}
+
+func TestContinuedAfterSwitch(t *testing.T) {
+	notice := "⏺ Remote Control disconnected —\n  signed-in claude.ai account or\n\n❯ /remote-control\n"
+	if s, c := continuedAfterSwitch("⏺ Done.\n❯ \n"); s || c {
+		t.Error("no notice, but a switch seen")
+	}
+	if s, c := continuedAfterSwitch("❯ continue\n" + notice + "❯ \n"); !s || c {
+		t.Error("a continue from before the switch counted")
+	}
+	if s, c := continuedAfterSwitch(notice + "❯ continue\n⏺ Working\n❯ \n"); !s || !c {
+		t.Error("continue after the switch not seen")
+	}
+}
+
+func TestWrapUpDue(t *testing.T) {
+	at := time.Date(2026, 11, 4, 15, 20, 0, 0, time.Local)
+	before, after := at.Add(-time.Hour), at.Add(time.Minute)
+	for _, c := range []struct {
+		switched, continued bool
+		now                 time.Time
+		want                bool
+	}{
+		{false, false, before, false}, // same account: wait for the reset
+		{false, false, after, true},
+		{true, false, before, true}, // new account: carry on now
+		{true, true, before, false}, // already continued: not twice
+		{true, true, after, true},   // a later limit on the new account
+	} {
+		if got := wrapUpDue(c.switched, c.continued, at, c.now); got != c.want {
+			t.Errorf("switched=%v continued=%v now=%v: got %v", c.switched, c.continued, c.now, got)
+		}
 	}
 }
