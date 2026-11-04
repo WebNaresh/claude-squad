@@ -216,3 +216,24 @@ func TestAutoFullProjectStillLoadsItsList(t *testing.T) {
 		t.Error("project at its limit never loads its issues, so the strip stays without PR and open counts")
 	}
 }
+
+// gai's last row, "Create a new PR", is not a "#N:" row: prKeys neither counts
+// it nor ever moves the cursor onto it, so no batch answers it for the user.
+func TestPRKeysNeverPicksCreateNewPR(t *testing.T) {
+	screen := "Multiple open PRs — select one:\n  ▶ #766: @x · feat · 2026-11-01 · 1 issue · t\n    #779: @me · dev · 2026-11-02 · no issues · t\n    Create a new PR"
+	if prRowRe.MatchString("    Create a new PR") {
+		t.Fatal("prRowRe matches the Create a new PR row")
+	}
+	keys, ok := prKeys(screen, 779)
+	if !ok || len(keys) != 2 || keys[0] != "Down" || keys[1] != "Enter" {
+		t.Errorf("prKeys(779) = %v, %v; want [Down Enter]", keys, ok)
+	}
+	// Lone teammate PR + the new row: no target (0) means no keys at all.
+	lone := "The only open PR is someone else's — confirm it:\n  ▶ #766: @x · feat · 2026-11-01 · 1 issue · t\n    Create a new PR"
+	if keys, ok := prKeys(lone, 0); ok {
+		t.Errorf("prKeys sent %v with no target", keys)
+	}
+	if !gaiAsksPR(lone) {
+		t.Error("lone teammate PR menu not seen as a question")
+	}
+}
