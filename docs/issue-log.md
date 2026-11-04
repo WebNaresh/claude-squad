@@ -71,6 +71,12 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Fix:** issue sessions keep their pane when gai exits (`remain-on-exit`), so the tile shows what gai said and still counts as busy. The runner logs gai's last lines ("its tile keeps what gai said: …") and doesn't start that issue again for 30 min after you close the tile (`gaiFailed`, `app/issuesdaemon.go`; `PaneDead`, `session/issues.go`). The issue picker's queue checks `PaneDead` too (`app/issues.go`). Once Claude works in the tile, remain-on-exit goes off again (`KeepOnExit`), so quitting Claude still closes the session.
 - **Guard:** live, a failing command on `tmux -L cstest` with remain-on-exit kept its error on screen, `pane_dead`=1.
 
+### Dead issue tile blank, only "Pane is dead" (2026-11-04)
+- **Saw:** abhyaiska #1103 and #1105 tiles: empty, with just `Pane is dead (status 1, …)` at the bottom. activity.log's "its tile keeps what gai said:" was empty for #1103.
+- **Cause:** gai's pane was 50 rows when it exited; tmux wrote "Pane is dead" on row 50. cs then shrank the pane to its 29-row tile and tmux pushed the top 21 rows (gai's error with them) into the scroll-back. The real errors were network blips: #1103 `gh auth status` failed offline, which gai reports as "gh CLI not authenticated" (gh was logged in); #1105 `TLS handshake timeout` on the PR-body GraphQL write.
+- **Fix:** `deadPaneContent`/`compactDead` (`app/grid.go`): a tile whose screen is blank above "Pane is dead" is rebuilt from the scroll-back with the gap dropped. The runner's log reads the scroll-back too (`PaneHistory`, `session/issues.go`).
+- **Guard:** `TestCompactDead`; live, both real panes showed gai's full output and error.
+
 ### Issue tile dead: "No commits between main and dev" (2026-10-31)
 - **Saw:** glitchgrab #747, #750 and #715 stopped before Claude started, each soon after a PR was merged: `pull request create failed: GraphQL: No commits between main and dev`. Closing the tile and starting again worked, through the "Create an empty commit" question.
 - **Cause:** a gai bug, not cs. Standing on `main` with an old `dev`, gai counted `dev`'s squash-merged commits, so it decided no empty commit was needed. It then moved `dev` onto `main` (added in gai-tools #74), leaving nothing to open a PR with. The move itself is why the second try worked.
