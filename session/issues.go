@@ -620,6 +620,14 @@ func PaneScreen(name string) string {
 	return string(out)
 }
 
+// PaneHistory returns a tmux session's screen and all its scroll-back as
+// plain text, with wrapped lines joined. A dead gai pane's error can sit in
+// the scroll-back: see DeadPaneLines.
+func PaneHistory(name string) string {
+	out, _ := exec.Command("tmux", "capture-pane", "-p", "-J", "-S", "-", "-t", name).Output()
+	return string(out)
+}
+
 // SendKeys sends tmux key names (Down, Enter…) to a session.
 func SendKeys(name string, keys ...string) error {
 	return exec.Command("tmux", append([]string{"send-keys", "-t", name}, keys...)...).Run()
