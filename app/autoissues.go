@@ -93,19 +93,32 @@ func (m *home) autoRunning(project string) int {
 	return n
 }
 
-// prRoom returns how many more issues the project's open PR takes, and the
-// PR (0 when none is open). gai attaches every issue to the one open PR.
+// prRoom returns how many more issues the project's PR takes, and the PR
+// (0 when there is none to go to). Which PR is session.ChoosePR's call, made
+// when the list loads; another PR's count never holds the batch back.
 func prRoom(issues []session.Issue) (room, pr int) {
-	count := map[int]int{}
 	for _, is := range issues {
-		if is.PR > 0 && !is.PRBot && !is.PRMerged { // a bot's or a merged PR is never where new issues go
-			count[is.PR]++
-			if count[is.PR] > count[pr] || pr == 0 {
-				pr = is.PR
-			}
+		if is.GatherPR > 0 {
+			pr = is.GatherPR
+			break
 		}
 	}
-	return autoMaxPerPR - count[pr], pr
+	if pr == 0 {
+		return autoMaxPerPR, 0
+	}
+	n := 0
+	for _, is := range issues {
+		if is.PR == pr {
+			n++
+		}
+	}
+	return autoMaxPerPR - n, pr
+}
+
+// prUnclear reports whether human PRs are open but none can be picked: gai
+// will ask, and only the user can answer.
+func prUnclear(issues []session.Issue) bool {
+	return len(issues) > 0 && issues[0].PRUnclear
 }
 
 // joining counts the issues whose session is running but which aren't on a
@@ -153,9 +166,9 @@ func (m *home) autoCheck() tea.Cmd {
 		}
 		running := m.autoRunning(p)
 		free := autoMaxSessions - running
-		if free <= 0 {
-			continue
-		}
+		// Loaded even when no session can start: the strip above the tiles
+		// reads this list, and a project at its limit showed no PR or open
+		// counts after every cs restart.
 		issues, cached := m.issueCache[p]
 		if (!cached || time.Since(m.autoFetched[p]) > autoListMaxAge) && !fetching {
 			// One list load per check; the next check decides on it.
@@ -163,7 +176,7 @@ func (m *home) autoCheck() tea.Cmd {
 			m.autoFetched[p] = time.Now()
 			cmds = append(cmds, loadIssues(p))
 		}
-		if !cached {
+		if !cached || free <= 0 {
 			continue
 		}
 		busy, skipped := m.busyIssues(p), readSkipped(p)
@@ -184,6 +197,9 @@ func (m *home) autoCheck() tea.Cmd {
 			}
 		}
 		n := min(free, room, offer)
+		if prUnclear(issues) {
+			n = min(n, 1) // one tile asks which PR; the rest wait for the answer
+		}
 		if n <= 0 {
 			continue
 		}
