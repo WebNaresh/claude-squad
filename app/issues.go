@@ -78,6 +78,7 @@ func (m *home) newIssuePicker(project string) {
 func (m *home) newIssuePickerTicking(project string, tick int, note string) {
 	m.issuePicker = ui.NewIssuePicker(project, projectNames(m.projectTabs.Projects())[project])
 	m.issuePicker.TickLimit, m.issuePicker.Auto, m.issuePicker.AutoOn = tick, note, m.autoOn(project)
+	showLimits(m.issuePicker)
 	m.issuePicker.SetSize(m.screenWidth, m.screenHeight)
 	m.issuePicker.SetSkipped(readSkipped(project))
 	m.issuePicker.NewestFirst = readPrefs(project).NewestFirst
@@ -271,6 +272,20 @@ func (m *home) handleIssuePickerKey(msg tea.KeyMsg) tea.Cmd {
 	if msg.String() == "a" {
 		m.toggleAuto(p.Project)
 		p.AutoOn = m.autoOn(p.Project)
+		return nil
+	}
+	switch msg.String() {
+	case "g":
+		p.EditAll = !p.EditAll
+		return nil
+	case "+", "=", "-":
+		delta := 1
+		if msg.String() == "-" {
+			delta = -1
+		}
+		if err := m.stepLimit(p, delta); err != nil {
+			return m.handleError(err)
+		}
 		return nil
 	}
 	if msg.String() == "s" && !p.Loading {
