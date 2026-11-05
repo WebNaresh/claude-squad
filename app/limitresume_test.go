@@ -53,7 +53,7 @@ func TestAccountSwitch(t *testing.T) {
 	limit := "● Bash(...)\n  ⎿  You've hit your session limit · resets 6:10pm (Asia/Calcutta)\n     /upgrade to increase your usage limit.\n\n✻ Worked for 1s · done 3:48 PM\n"
 	notice := "⏺ Remote Control disconnected — signed-in claude.ai account or organization changed on this machine — run\n  /remote-control to start a session for the current account, or /login to switch back, then\n  /remote-control\n\n❯ \n"
 	screen := limit + notice
-	if !switchedAccount(screen) {
+	if !remoteControlOff(screen) {
 		t.Error("notice is the last step, but no switch seen")
 	}
 	if !limitIsLast(screen) {
@@ -61,34 +61,40 @@ func TestAccountSwitch(t *testing.T) {
 	}
 	// A 47-column tile: Claude wraps the notice, "signed-in" on the next line.
 	wrapped := limit + "⏺ Remote Control disconnected —                \n  signed-in claude.ai account or \n  organization changed on this machine\n  /remote-control\n\n❯ /login\n  ⎿  Login successful\n\n❯ \n"
-	if !switchedAccount(wrapped) {
+	if !remoteControlOff(wrapped) {
 		t.Error("notice wrapped in a narrow tile, but no switch seen")
 	}
 	if !limitIsLast(wrapped) {
 		t.Error("the wrapped switch notice counted as a new step after the limit")
 	}
 	// Narrower still: "disconnected —" alone on its own line.
-	if !switchedAccount("⏺ Remote Control\n  disconnected —\n  signed-in claude.ai\n\n❯ \n") {
+	if !remoteControlOff("⏺ Remote Control\n  disconnected —\n  signed-in claude.ai\n\n❯ \n") {
 		t.Error("notice wrapped twice, but no switch seen")
 	}
 	// The tile /login ran in, notice pushed off its short screen.
-	if !switchedAccount("❯ /login\n  ⎿  Login successful\n\n❯ \n") {
+	if !remoteControlOff("❯ /login\n  ⎿  Login successful\n\n❯ \n") {
 		t.Error("/login finished here, but no switch seen")
 	}
 	// Quoted in tool output, indented: not this tile's notice.
-	if switchedAccount("⏺ Bash(tmux capture-pane)\n  ⎿  ok\n     ⏺ Remote Control disconnected — signed-in claude.ai\n\n❯ \n") {
+	if remoteControlOff("⏺ Bash(tmux capture-pane)\n  ⎿  ok\n     ⏺ Remote Control disconnected — signed-in claude.ai\n\n❯ \n") {
 		t.Error("a quoted notice seen as this tile's switch")
 	}
 	// Already handled: /remote-control prints no step, and a cs restart
 	// forgets what it typed.
-	if switchedAccount(notice + "❯ /remote-control\n\n  /remote-control is active\n\n❯ /reload-plugins\n  ⎿  Reloaded\n\n❯ \n") {
+	if remoteControlOff(notice + "❯ /remote-control\n\n  /remote-control is active\n\n❯ /reload-plugins\n  ⎿  Reloaded\n\n❯ \n") {
 		t.Error("/remote-control already typed, but still seen as just switched")
 	}
-	// After /remote-control and continue: Claude works again, no switch.
-	if switchedAccount(screen + "⏺ Bash(go test)\n❯ \n") {
-		t.Error("a later step, but still seen as just switched")
+	// Work after the notice (the tile was on a question, or mid-turn) leaves
+	// Remote Control off all the same: #3043 was never turned back on.
+	if !remoteControlOff(screen + "⏺ Bash(go test)\n❯ \n") {
+		t.Error("work after the notice, but Remote Control seen as on")
 	}
-	if switchedAccount("⏺ Done.\n❯ \n") {
+	// A second notice after one that was handled: off again.
+	again := notice + "❯ /remote-control\n  /remote-control is active\n⏺ Done.\n" + notice
+	if !remoteControlOff(again) {
+		t.Error("second notice after a handled one, but Remote Control seen as on")
+	}
+	if remoteControlOff("⏺ Done.\n❯ \n") {
 		t.Error("no notice, but a switch seen")
 	}
 	// ⏺ is a step too: a resumed session isn't stopped on its limit.
@@ -174,5 +180,37 @@ func TestWrapUpDue(t *testing.T) {
 		if got := wrapUpDue(c.switched, c.continued, at, c.now); got != c.want {
 			t.Errorf("switched=%v continued=%v now=%v: got %v", c.switched, c.continued, c.now, got)
 		}
+	}
+}
+
+// /remote-control that never lands is typed again later, a few times only.
+func TestRCRetry(t *testing.T) {
+	rcTries = map[string]rcTry{}
+	now := time.Now()
+	if !rcDue("t", now) {
+		t.Fatal("first try not due")
+	}
+	rcTries["t"] = rcTry{at: now, n: 1}
+	if rcDue("t", now.Add(30*time.Second)) {
+		t.Error("retried too soon")
+	}
+	if !rcDue("t", now.Add(rcRetryAfter)) {
+		t.Error("no retry after the wait")
+	}
+	rcTries["t"] = rcTry{at: now, n: rcMaxTries}
+	if rcDue("t", now.Add(time.Hour)) {
+		t.Error("kept retrying past the limit")
+	}
+}
+
+// /remote-control alone isn't enough: until /reload-plugins is in, the tile
+// still counts as switched, so no continue goes in before the reload.
+func TestReloadBeforeContinue(t *testing.T) {
+	notice := "⏺ Remote Control disconnected — signed-in claude.ai account or organization changed\n\n"
+	if !remoteControlOff(notice + "❯ /remote-control\n  /remote-control is active\n\n❯ \n") {
+		t.Error("no /reload-plugins yet, but seen as handled")
+	}
+	if remoteControlOff(notice + "❯ /remote-control\n❯ /reload-plugins\n  ⎿  Reloaded\n❯ continue\n⏺ Done.\n❯ \n") {
+		t.Error("reloaded, but still seen as switched")
 	}
 }
