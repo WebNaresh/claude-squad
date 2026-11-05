@@ -84,6 +84,13 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Guard:** temp repo with a fake `gh`, on `main` with a squash-merged `dev`: failed with the same error before, opens the PR after. activity.log: `gai issue #N stopped before Claude started`.
 - **Files:** `gai` (gai-tools repo).
 
+### Two PRs for one branch after a merge (2026-11-05)
+- **Saw:** practise_stack had #3072 and #3073, both `dev → main`, right after #3068 was merged. #3072 had no issues, and #3029's tile sat at gai's "Multiple open PRs — select one".
+- **Cause:** the background runner started #3022 while the window's ⌥N queue started #3028. Each runs one gai at a time, but only within itself. Both found no open PR and called `gh pr create` in the same second, and `gai pr` took no lock there, so GitHub's "already exists" refusal never fired. #3029 stalled for a second reason: since gai's list gained its last row, "Create a new PR" (gai-tools #80), the pane's last line no longer looked like a list row, so neither runner reached its PR pick. Any "Multiple open PRs" question sat until the 5-minute timeout.
+- **Fix:** `gh pr create` runs under a lock per repo, branch and base (`_gai_pr_lock`). The second run waits, is refused and reuses the first PR. The two starters still run side by side; only the PR step is taken in turn. `gaiListLine` counts the "Create a new PR" row, in both runners.
+- **Guard:** two parallel `gai pr` from two clones with a fake `gh` that has a check-then-create gap: 2 PRs in 3 of 3 runs before, 1 PR in every run after, no lock left behind. Screen line: `Another gai is writing the PR for 'dev' — waiting for it…`. `TestGaiListLine`; activity.log: `picked PR #N`.
+- **Files:** `gai`, `CLAUDE.md`, `CHANGELOG.md`, `docs/usage.md` (gai-tools repo); `app/issues.go`, `app/issuesdaemon.go`.
+
 ### Issue tile dead at "Fetching #N context…"
 - **Saw (2026-10-30):** practise_stack #2906's tile ended with `dial tcp 20.207.73.85:443: i/o timeout`, `error: could not fetch issue #2906`, `Pane is dead (status 1)`. PR steps had already worked; Claude never started.
 - **Cause:** a network blip on gai's last `gh issue view`. gai tried once and gave up, so the whole run was lost. The tile stayed dead as designed (see "Issue tile closing and starting again in a loop").
