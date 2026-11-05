@@ -343,9 +343,9 @@ func (m *home) stepIssues() tea.Cmd {
 	case time.Since(j.started) > issueJobTimeout:
 		m.issueJob = nil
 		return tea.Batch(m.handleError(fmt.Errorf("issue #%d is taking long; it stays in its session, moving on", j.issue.Number)), m.issueTick(0))
-	case strings.HasPrefix(line, "#") || strings.HasPrefix(line, "▶"):
-		// gai's "Multiple open PRs — select one" list (its last line is a
-		// list row): pick the PR this project's issues go to.
+	case gaiListLine(line):
+		// gai's "Multiple open PRs — select one" list: pick the PR this
+		// project's issues go to.
 		if j.answered != "pr" {
 			if cmd := m.pickPR(j); cmd != nil {
 				return tea.Batch(cmd, m.issueTick(time.Second))
@@ -398,6 +398,13 @@ func (m *home) moreQueuedIn(project string) bool {
 // prRowRe matches a row of gai's PR list:
 // "  ▶ #2305: @login · dev · 2026-11-02 · 3 issues · title".
 var prRowRe = regexp.MustCompile(`^\s*(▶)?\s*#(\d+):`)
+
+// gaiListLine reports whether a pane's last line can be the bottom of gai's PR
+// list: a "#N:" row, the cursor row, or the "Create a new PR" row gai always
+// ends it with. Callers confirm with gaiAsksPR.
+func gaiListLine(line string) bool {
+	return strings.HasPrefix(line, "#") || strings.HasPrefix(line, "▶") || line == "Create a new PR"
+}
 
 // gaiAsksPR reports whether gai's PR question is on screen: several PRs, or
 // a lone PR that is someone else's (it stays for the user: no target matches).
