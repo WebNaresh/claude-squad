@@ -48,13 +48,18 @@ type IssuePicker struct {
 	TickLimit int
 	// Auto says the auto loop opened the picker and why ("1 free slot …");
 	// AutoOn is whether the loop runs for this project (a switches it).
-	Auto     string
-	AutoOn   bool
-	selected map[int]bool
-	cursor   int
-	scroll   int // preview scroll offset
-	width    int
-	height   int
+	Auto   string
+	AutoOn bool
+	// Limit is this project's session limit, LimitAll the all-projects one,
+	// LimitOwn whether the project has its own. EditAll: +/- change LimitAll
+	// (g switches). The caller saves them; the picker only shows them.
+	Limit, LimitAll   int
+	LimitOwn, EditAll bool
+	selected          map[int]bool
+	cursor            int
+	scroll            int // preview scroll offset
+	width             int
+	height            int
 }
 
 // NewIssuePicker opens the picker for a project while its issues load.
@@ -286,13 +291,17 @@ func (p *IssuePicker) Render() string {
 	b.WriteString(ipTitleStyle.Render("Start Claude on issues") + "   project: " + ipTitleStyle.Render("‹ "+p.Name+" ›") + "   " + ipDimStyle.Render(order) + "\n")
 	b.WriteString(KeyRow("", []Key{{"enter", "start"}, {"esc", "cancel"}, {"space", "tick"}, {"x", "skip"}, {"r", "refresh"}, {"1-9", "tick first N"}, {"↑↓", "move"},
 		{"s", other}, {"←→", "project"}, {"o", "open"}, {"a", autoLabel(p.AutoOn)}, {"J/K", "scroll"}}, w-4) + "\n")
+	// Its keys sit on this line: at the end of the row above they'd be the
+	// first to fall behind its "…".
+	limit := p.limitLine()
+	b.WriteString(limit + "   " + KeyRow("", []Key{{"+/-", "change"}, {"g", limitScopeLabel(p.EditAll)}}, max(0, w-4-lipgloss.Width(limit))) + "\n")
 	if p.Auto != "" {
 		b.WriteString(ipTitleStyle.Render("⟳ Auto: ") + p.Auto + "\n")
 	}
 	b.WriteString("\n")
 	// Loading, error and empty states take the full list's height too, so
 	// the picker doesn't jump when the list arrives.
-	avail := max(12, p.height-9)
+	avail := max(12, p.height-10)
 	full := strings.Count(b.String(), "\n") + avail + 1
 	fixed := func(s string) string {
 		if n := strings.Count(s, "\n") + 1; n < full {
@@ -454,6 +463,31 @@ func ageString(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
+}
+
+// limitScopeLabel is the g key's hint: what pressing it switches to.
+func limitScopeLabel(editAll bool) string {
+	if editAll {
+		return "this project"
+	}
+	return "all projects"
+}
+
+// limitLine says which number applies here and which one +/- changes: that
+// one comes first, and the other is in brackets.
+func (p *IssuePicker) limitLine() string {
+	var line string
+	switch {
+	case p.EditAll && p.LimitOwn:
+		line = fmt.Sprintf("%d all projects  (this project: %d)", p.LimitAll, p.Limit)
+	case p.EditAll:
+		line = fmt.Sprintf("%d all projects", p.LimitAll)
+	case p.LimitOwn:
+		line = fmt.Sprintf("%d this project  (all projects: %d)", p.Limit, p.LimitAll)
+	default:
+		line = fmt.Sprintf("%d this project, same as all projects", p.Limit)
+	}
+	return ipTitleStyle.Render("Limit: ") + line
 }
 
 // autoLabel is the a key's hint: what pressing it does.
