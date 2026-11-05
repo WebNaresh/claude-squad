@@ -20,7 +20,7 @@ import (
 //
 // Every daemonEvery, for each open project with auto on (not switched off
 // with a in the issue picker): count its Claude sessions; while fewer than
-// autoMaxSessions run and its open PR has fewer than autoMaxPerPR issues,
+// sessionLimit run and its open PR has fewer than autoMaxPerPR issues,
 // open sessions for the oldest open issues that aren't skipped, in a PR, or
 // already running. Each runs `gai issue` (one at a time across all projects,
 // since gai rewrites the shared PR), and the runner answers gai's questions:
@@ -166,11 +166,12 @@ func RunIssuesDaemon() error {
 					running++
 				}
 			}
-			free := autoMaxSessions - running
+			limit := sessionLimit(p)
+			free := limit - running
 			if free <= 0 {
-				if key := fmt.Sprint("full", running); said[p] != key {
+				if key := fmt.Sprint("full", running, limit); said[p] != key {
 					said[p] = key
-					logEvent("daemon: %s: %d sessions running (limit %d); waiting for one to close", filepath.Base(p), running, autoMaxSessions)
+					logEvent("daemon: %s: %d sessions running (limit %d); waiting for one to close", filepath.Base(p), running, limit)
 				}
 				continue
 			}
