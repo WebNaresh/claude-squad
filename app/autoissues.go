@@ -13,7 +13,7 @@ import (
 )
 
 // Auto issue loop. For each project with auto on, every few seconds cs
-// counts its Claude sessions; when fewer than autoMaxSessions run and the
+// counts its Claude sessions; when fewer than sessionLimit run and the
 // open PR has room (autoMaxPerPR issues), it opens the issue picker on that
 // project with as many issues ticked as there are free slots (oldest first,
 // never skipped ones). Only on the tab you're on: other tabs show "·N free"
@@ -25,10 +25,9 @@ import (
 // a in the picker switches it off (or back on) for that project.
 
 const (
-	autoMaxSessions = 6
-	autoMaxPerPR    = 15
-	autoEvery       = 5 * time.Second
-	autoListMaxAge  = time.Minute
+	autoMaxPerPR   = 15
+	autoEvery      = 5 * time.Second
+	autoListMaxAge = time.Minute
 )
 
 type autoTickMsg struct{}
@@ -165,7 +164,7 @@ func (m *home) autoCheck() tea.Cmd {
 			continue
 		}
 		running := m.autoRunning(p)
-		free := autoMaxSessions - running
+		free := sessionLimit(p) - running
 		// Loaded even when no session can start: the strip above the tiles
 		// reads this list, and a project at its limit showed no PR or open
 		// counts after every cs restart.
@@ -233,7 +232,8 @@ func (m *home) offerIssues(project string, n, running, room, pr int) tea.Cmd {
 	if n > 1 {
 		slots = "slots"
 	}
-	note := fmt.Sprintf("%d free %s (%d of %d sessions running)", autoMaxSessions-running, slots, running, autoMaxSessions)
+	limit := sessionLimit(project)
+	note := fmt.Sprintf("%d free %s (%d of %d sessions running)", limit-running, slots, running, limit)
 	if pr > 0 {
 		note += fmt.Sprintf(" · PR #%d has room for %d more", pr, room)
 	}
