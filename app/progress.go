@@ -16,7 +16,7 @@ import (
 // Progress strip: one line above the tiles for the current project, so the
 // work shows: the open PR filling up to autoMaxPerPR issues, open issues left
 // (and how many fewer than this morning), sessions running out of
-// autoMaxSessions, sessions finished today and the day streak, plus totals
+// sessionLimit, sessions finished today and the day streak, plus totals
 // across all projects. "Finished" = a Claude session closed with ⌃Space W
 // (closeSession); counts are kept in progress.json so restarts don't lose them.
 
@@ -121,6 +121,7 @@ func (p *progressData) doneOn(day string) int {
 type projectStats struct {
 	pr, inPR, open, running int
 	known                   bool // the issue list has been loaded
+	prFull                  bool // a session slot is free, but the PR has no room
 }
 
 func (m *home) projectStats(project string) projectStats {
@@ -132,6 +133,8 @@ func (m *home) projectStats(project string) projectStats {
 	s.known = true
 	room, pr := prRoom(issues)
 	s.pr, s.inPR = pr, autoMaxPerPR-room
+	s.prFull = pr > 0 && room-joining(issues, m.busyIssues(project)) <= 0 &&
+		s.running < sessionLimit(project) && m.autoOn(project)
 	for _, is := range issues {
 		if is.PR == 0 {
 			s.open++
@@ -189,7 +192,12 @@ func (m *home) renderProgress(width int) string {
 		}
 		parts = append(parts, open)
 	}
-	parts = append(parts, progLabel.Render("▶ ")+progValue.Render(fmt.Sprintf("%d/%d", s.running, autoMaxSessions))+progLabel.Render(" running"))
+	running := progLabel.Render("▶ ") + progValue.Render(fmt.Sprintf("%d/%d", s.running, sessionLimit(project))) + progLabel.Render(" running")
+	if s.prFull {
+		// A free slot with no reason on screen reads as the limit not working.
+		running += progDimNote.Render(" (PR full: merge it to start more)")
+	}
+	parts = append(parts, running)
 	done := m.progress.Done[today()][project]
 	parts = append(parts, progGood.Render(fmt.Sprintf("✓ %d", done))+progLabel.Render(" done today"))
 	if st := m.progress.streak(); st > 0 {
