@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"claude-squad/session"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func pickerWith(n int) *IssuePicker {
@@ -135,5 +137,26 @@ func TestPickerDatedFollowUpNotTicked(t *testing.T) {
 	p.SetSize(120, 30)
 	if out := p.Render(); !strings.Contains(out, "(waits until 4 Nov 00:00)") {
 		t.Fatalf("picker doesn't say when it's due:\n%s", out)
+	}
+}
+
+// The limit line says which number applies and which one +/- changes.
+func TestPickerLimitLine(t *testing.T) {
+	p := pickerWith(1)
+	p.Limit, p.LimitAll = 6, 6
+	for _, c := range []struct {
+		own, all bool
+		limit    int
+		want     string
+	}{
+		{false, false, 6, "6 this project, same as all projects"},
+		{true, false, 8, "8 this project  (all projects: 6)"},
+		{false, true, 6, "6 all projects"},
+		{true, true, 8, "6 all projects  (this project: 8)"},
+	} {
+		p.LimitOwn, p.EditAll, p.Limit = c.own, c.all, c.limit
+		if got := ansi.Strip(p.limitLine()); got != "Limit: "+c.want {
+			t.Errorf("own=%v all=%v: %q", c.own, c.all, got)
+		}
 	}
 }
