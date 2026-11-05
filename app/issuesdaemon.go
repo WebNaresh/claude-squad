@@ -406,7 +406,7 @@ func stepDaemonJob(j *daemonJob, issues []session.Issue) bool {
 	case time.Since(j.started) > issueJobTimeout:
 		logEvent("daemon: #%d taking long; leaving it in its tile", j.issue.Number)
 		return true
-	case strings.HasPrefix(line, "#") || strings.HasPrefix(line, "▶"):
+	case gaiListLine(line):
 		if j.answered != "pr" {
 			j.answered = "pr"
 			screen := session.PaneScreen(j.name)
