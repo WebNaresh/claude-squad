@@ -62,7 +62,7 @@ func (h helpTypeGeneral) toContent() string {
 		k("C", "new Claude session in this project"),
 		k("T", "terminal for dev servers, git, … (show / hide)"),
 		k("E", "new terminal as a tile (when T's is busy running something)"),
-		k("N", "start Claude sessions from GitHub issues"),
+		k("N", "start Claude sessions from GitHub issues; +/- there sets the session limit, g: all projects"),
 		k("S", "source control: stage, discard, commit, diffs"),
 		k("P", "push the branch (or click ↑N at the bottom; click ↓N to pull; PR #… opens the pull request, ↻ refreshes its checks)"),
 		k("A", "add another project (folder chooser)"),
