@@ -237,3 +237,21 @@ func TestPRKeysNeverPicksCreateNewPR(t *testing.T) {
 		t.Error("lone teammate PR menu not seen as a question")
 	}
 }
+
+// gai's PR list ends with "Create a new PR", so that is the pane's last line
+// while it waits. Both issue runners must still see the list there.
+func TestGaiListLine(t *testing.T) {
+	for line, want := range map[string]bool{
+		"Create a new PR":           true,
+		"▶ Create a new PR":         true,
+		"▶ #766: @x · feat · t":     true,
+		"#779: @me · dev · t":       true,
+		"Create a PR for #3? [Y/n]": false,
+		"→ Creating PR…":            false,
+		"":                          false,
+	} {
+		if got := gaiListLine(line); got != want {
+			t.Errorf("gaiListLine(%q) = %v, want %v", line, got, want)
+		}
+	}
+}
