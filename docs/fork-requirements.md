@@ -95,7 +95,7 @@ Source: the user's own description of their workflow (2026-10-01).
 - Runs in the background (extend `daemon/daemon.go`; today it only auto-answers prompts).
 - Every **5 minutes** per selected project: fetch open issues with `gh`, and start one agent per **new** issue (every new issue, no label filter).
 - Limits:
-  - Max **7 agents running at once per project**; extra issues wait in a queue.
+  - Max agents running at once: set in the issue picker (`+`/`-`, `g` switches between this project and all projects), 1 to 12, default 6. A project's own number wins. Extra issues wait in a queue.
   - Max **15 issues** picked up before it stops taking new ones. Open item: confirm whether 15 is per PR (reset after merge) or per day.
 - Offline-safe: if there is no internet, wait and retry; resume automatically when the connection returns.
 - Remember which issues were already picked up (persist in state) so restarts don't double-start them.
