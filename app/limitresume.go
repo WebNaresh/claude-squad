@@ -2,9 +2,6 @@ package app
 
 import (
 	"claude-squad/session"
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -259,48 +256,54 @@ func limitIsLast(screen string) bool {
 	return false
 }
 
-// switchedAccount reports whether the last step on the screen is the
-// account-switch notice: the user signed in to another subscription since
-// this session last did anything. /remote-control below the notice means it
-// was already handled: the command prints no step, so without this check
-// every cs restart (which clears the runner's memory) typed it again.
-func switchedAccount(screen string) bool {
-	lines := strings.Split(screen, "\n")
+// remoteControlOff reads a tile's scroll-back: the latest account-switch
+// notice (or the "Login successful" of the tile /login ran in) has no
+// /reload-plugins typed below it, so Remote Control or the claude.ai
+// connectors are still on the old account there.
+// The scroll-back, not the last step: a tile that was on a question or
+// mid-turn at the switch went on working after the notice, and the runner,
+// which only looked at the last step, never turned it back on (#3043, 5 Nov).
+// /remote-control below the notice means it was handled; it prints no step,
+// so this also survives a cs restart.
+func remoteControlOff(history string) bool {
+	lines := strings.Split(history, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		l := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(l, "❯") && strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(l, "❯")), "/remote-control") {
+		// Handled once /reload-plugins went in below it: the runner types it
+		// after /remote-control, and a continue must not come before it.
+		if strings.HasPrefix(l, "❯") && strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(l, "❯")), "/reload-plugins") {
 			return false
 		}
-		// The tile /login ran in: its own output can push the notice off a
-		// short tile's screen.
 		if strings.HasPrefix(l, "⎿") && strings.HasSuffix(l, "Login successful") {
 			return true
 		}
-		if isStep(l) {
-			return isAccountSwitch(lines, i)
+		if isAccountSwitch(lines, i) {
+			return true
 		}
 	}
 	return false
 }
 
-// claudeAccount names the signed-in claude.ai account and organization
-// (from ~/.claude.json), so each switch is handled once per tile.
-func claudeAccount() string {
-	home, _ := os.UserHomeDir()
-	data, err := os.ReadFile(filepath.Join(home, ".claude.json"))
-	if err != nil {
-		return ""
-	}
-	var c struct {
-		OAuthAccount struct {
-			AccountUUID      string `json:"accountUuid"`
-			OrganizationUUID string `json:"organizationUuid"`
-		} `json:"oauthAccount"`
-	}
-	if json.Unmarshal(data, &c) != nil {
-		return ""
-	}
-	return c.OAuthAccount.AccountUUID + "/" + c.OAuthAccount.OrganizationUUID
+// rcTries remembers when /remote-control was last typed into a tile, and how
+// often: text that never lands (the tile's own screen showed nothing after
+// "typed" was logged at 12:47 on 5 Nov) is typed again after rcRetryAfter,
+// at most rcMaxTries times, instead of being written off for good.
+var rcTries = map[string]rcTry{}
+
+type rcTry struct {
+	at time.Time
+	n  int
+}
+
+const (
+	rcRetryAfter = 90 * time.Second
+	rcMaxTries   = 3
+)
+
+// rcDue says whether /remote-control should be typed into tile now.
+func rcDue(tile string, now time.Time) bool {
+	t := rcTries[tile]
+	return t.n < rcMaxTries && (t.n == 0 || now.Sub(t.at) >= rcRetryAfter)
 }
 
 // resumeAfterLimit types "continue" into idle tiles whose usage limit has
@@ -308,7 +311,6 @@ func claudeAccount() string {
 // returns when the next pending resume is due (zero: none), so the daemon
 // looks again right then instead of on its next 15s scan.
 func resumeAfterLimit(sessions []*session.ExternalSession, done map[string]bool, now time.Time) time.Time {
-	account := ""
 	var next time.Time
 	due := func(t time.Time) {
 		if t.After(now) && (next.IsZero() || t.Before(next)) {
@@ -328,15 +330,28 @@ func resumeAfterLimit(sessions []*session.ExternalSession, done map[string]bool,
 		// claude.ai connectors dropped, and the old account's limit no longer
 		// applies. Turn Remote Control back on, reload the connectors and, if the tile was stopped on a limit, carry on now
 		// instead of waiting for the old account's reset time.
-		if switchedAccount(screen) && promptEmpty(e.Live) {
-			if account == "" {
-				account = claudeAccount()
-			}
-			key := e.Name + "|account|" + account
-			if done[key] {
+		// Only once Claude stopped and the prompt is empty: typed into a busy
+		// tile it would queue, into a question it would pick an option.
+		// Remote Control off: nothing else is typed into this tile until
+		// /remote-control and /reload-plugins went in, so a continue never
+		// runs on the old account's connectors (glitchgrab #757 got a bare
+		// continue from the wrap-up rule below, 5 Nov).
+		rcOff := remoteControlOff(session.PaneHistory(e.Live))
+		if !rcOff {
+			delete(rcTries, e.Name) // handled: the next /login starts with fresh tries
+		}
+		if rcOff {
+			if e.Status == "busy" || !promptEmpty(e.Live) {
 				continue
 			}
-			done[key] = true
+			if !rcDue(e.Name, now) {
+				if rcTries[e.Name].n >= rcMaxTries && !done[e.Name+"|rc-gave-up"] {
+					done[e.Name+"|rc-gave-up"] = true
+					logEvent("daemon: %s: /remote-control typed %d times, still not on; type it in that tile", e.Name, rcMaxTries)
+				}
+				continue
+			}
+			rcTries[e.Name] = rcTry{at: now, n: rcTries[e.Name].n + 1}
 			_ = session.PressKeys(e.Live, "/remote-control")
 			// The claude.ai connectors (Glitchgrab: /stage's screenshot
 			// upload) stay signed in to the old account until reloaded.
