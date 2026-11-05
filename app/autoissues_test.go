@@ -19,6 +19,7 @@ import (
 // sessions, its open PR closing inPR issues, and `open` issues not in a PR.
 func autoHome(t *testing.T, running, inPR, open int) (*home, string) {
 	t.Helper()
+	t.Setenv("CLAUDE_SQUAD_HOME", t.TempDir())   // not the user's real limits and settings
 	daemonRunning = func() bool { return false } // not the user's real background runner
 	project := t.TempDir()
 	sp := spinner.New()
@@ -56,7 +57,7 @@ func TestAutoOffersFreeSlotsCappedByPR(t *testing.T) {
 }
 
 func TestAutoQuietWhenFullOrPRFull(t *testing.T) {
-	if m, _ := autoHome(t, autoMaxSessions, 0, 5); m.stepAuto() != nil && m.issuePicker != nil {
+	if m, _ := autoHome(t, defaultMaxSessions, 0, 5); m.stepAuto() != nil && m.issuePicker != nil {
 		t.Error("offered with all session slots taken")
 	}
 	if m, _ := autoHome(t, 2, autoMaxPerPR, 5); m.stepAuto() != nil && m.issuePicker != nil {
@@ -207,7 +208,7 @@ func TestJoiningTakesPRRoom(t *testing.T) {
 // A project at its session limit still loads its list: after a cs restart the
 // strip above the tiles has nothing else to show the PR and open counts from.
 func TestAutoFullProjectStillLoadsItsList(t *testing.T) {
-	m, project := autoHome(t, autoMaxSessions, 8, 3)
+	m, project := autoHome(t, defaultMaxSessions, 8, 3)
 	// As after a restart: no list in memory, none fetched yet.
 	delete(m.issueCache, project)
 	delete(m.autoFetched, project)
