@@ -84,6 +84,14 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Guard:** temp repo with a fake `gh`, on `main` with a squash-merged `dev`: failed with the same error before, opens the PR after. activity.log: `gai issue #N stopped before Claude started`.
 - **Files:** `gai` (gai-tools repo).
 
+### Session limit stuck at 6 (2026-11-05)
+- **Saw:** the strip read 8/6 running. The user wants 8 on busy days and 6 on others, for one project or for all, and had no way to set it.
+- **Cause:** `autoMaxSessions` was a constant; the 8 were sessions started by hand. Nothing was broken.
+- **Fix:** issue picker: `+`/`-` change the limit (1 to 12), `g` switches between this project and all projects. A project at the all-projects number drops its own and follows it. Saved in `~/.claude-squad/session-limits.json`, read by the window and the background runner. Lowering closes nothing.
+- **Guard:** `TestSessionLimitOrder`, `TestSessionLimitStep`, `TestAutoLoopUsesTheLimit`, `TestPickerLimitKeys`; live in a test cs. activity.log: `session limit: <project> now N`. `autoHome` sets `CLAUDE_SQUAD_HOME`: without it a test wrote the user's real limits file.
+- **Files:** `app/sessionlimit.go`, `app/issues.go`, `app/autoissues.go`, `app/issuesdaemon.go`, `app/progress.go`, `ui/issuepicker.go`.
+- **Came back (same day): set to 8, the 8th slot stayed empty.** Not the limit: PR #3073 was at 15 of 15, and that reason showed once in the message line (activity.log: `PR #3073 has 15 issues (the limit)`). Fix: the strip keeps saying it beside the count, `7/8 running (PR full: merge it to start more)`, only while a slot is free, the PR has no room and auto is on (`prFull`, `app/progress.go`). Guard: `TestStripSaysWhyASlotIsEmpty`.
+
 ### Two PRs for one branch after a merge (2026-11-05)
 - **Saw:** practise_stack had #3072 and #3073, both `dev → main`, right after #3068 was merged. #3072 had no issues, and #3029's tile sat at gai's "Multiple open PRs — select one".
 - **Cause:** the background runner started #3022 while the window's ⌥N queue started #3028. Each runs one gai at a time, but only within itself. Both found no open PR and called `gh pr create` in the same second, and `gai pr` took no lock there, so GitHub's "already exists" refusal never fired. #3029 stalled for a second reason: since gai's list gained its last row, "Create a new PR" (gai-tools #80), the pane's last line no longer looked like a list row, so neither runner reached its PR pick. Any "Multiple open PRs" question sat until the 5-minute timeout.
