@@ -6,8 +6,10 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -29,6 +31,47 @@ var perf struct {
 	renderNanos   atomic.Int64 // time spent in View()
 	sessionsNanos atomic.Int64 // last ListExternalSessions duration
 	gitNanos      atomic.Int64 // last git status duration
+
+	msgMu sync.Mutex
+	msgs  map[string]int // Update() calls by message type since the last usage line
+}
+
+// countMsg tallies one Update() message by type, so usage.log shows what
+// keeps cs redrawing (each message is a View()).
+func countMsg(msg tea.Msg) {
+	name := fmt.Sprintf("%T", msg)
+	name = name[strings.LastIndex(name, ".")+1:]
+	perf.msgMu.Lock()
+	if perf.msgs == nil {
+		perf.msgs = map[string]int{}
+	}
+	perf.msgs[name]++
+	perf.msgMu.Unlock()
+}
+
+// topMsgs returns the busiest message types since the last call ("previewTickMsg:75 ...").
+func topMsgs(n int) string {
+	perf.msgMu.Lock()
+	counts := perf.msgs
+	perf.msgs = nil
+	perf.msgMu.Unlock()
+	type kv struct {
+		k string
+		v int
+	}
+	var all []kv
+	for k, v := range counts {
+		all = append(all, kv{k, v})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].v > all[j].v || all[i].v == all[j].v && all[i].k < all[j].k })
+	var parts []string
+	for i, e := range all {
+		if i == n {
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s:%d", e.k, e.v))
+	}
+	return strings.Join(parts, " ")
 }
 
 func usageTick() tea.Cmd {
@@ -65,12 +108,12 @@ func collectUsage() string {
 			free = strings.TrimSpace(string(out)[i+1:])
 		}
 	}
-	return fmt.Sprintf("cs cpu=%s%% rss=%dMB heap=%dMB goroutines=%d renders=%d/%s avg=%s | claude procs=%d rss=%dMB cpu=%.0f%% | tmux procs=%d sessions=%d rss=%dMB | mac load=%s free-mem=%s | last refresh sessions=%s git=%s",
+	return fmt.Sprintf("cs cpu=%s%% rss=%dMB heap=%dMB goroutines=%d renders=%d/%s avg=%s | claude procs=%d rss=%dMB cpu=%.0f%% | tmux procs=%d sessions=%d rss=%dMB | mac load=%s free-mem=%s | last refresh sessions=%s git=%s | msgs %s",
 		csCPU, csRSS/1024, ms.HeapAlloc>>20, runtime.NumGoroutine(), renders, usageInterval, avgRender.Round(time.Microsecond),
 		claudeN, claudeRSS/1024, claudeCPU,
 		tmuxN, sessions, tmuxRSS/1024,
 		strings.Trim(strings.TrimSpace(string(load)), "{} "), free,
-		time.Duration(perf.sessionsNanos.Load()).Round(time.Millisecond), time.Duration(perf.gitNanos.Load()).Round(time.Millisecond))
+		time.Duration(perf.sessionsNanos.Load()).Round(time.Millisecond), time.Duration(perf.gitNanos.Load()).Round(time.Millisecond), topMsgs(6))
 }
 
 // psSelf returns cs's own CPU% and RSS (KB).
