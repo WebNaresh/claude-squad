@@ -226,6 +226,7 @@ type home struct {
 	needsSeen      map[string]bool
 	questionJumped map[string]bool
 	lastKey        time.Time
+	previewWake    chan struct{} // cuts the preview tick's idle wait short (markActive)
 	lastPick       time.Time
 	gridMarkdown   map[string]*ui.MarkdownCache
 	// paneWidth is the width of the session pane / grid area
@@ -301,6 +302,7 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 
 	h := &home{
 		ctx:          ctx,
+		previewWake:  make(chan struct{}, 1),
 		spinner:      spinner.New(spinner.WithSpinner(spinner.MiniDot)),
 		menu:         ui.NewMenu(),
 		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
@@ -499,8 +501,44 @@ func (m *home) previewInterval() time.Duration {
 		return 50 * time.Millisecond // typing: show each key quickly
 	case since < 3*time.Second:
 		return 100 * time.Millisecond
+	case since < previewIdleAfter:
+		return 400 * time.Millisecond
 	}
-	return 400 * time.Millisecond
+	// Nobody at the keyboard: each tick redraws the whole screen (~5ms),
+	// and at 400ms that alone kept cs at ~11% CPU all day. markActive wakes
+	// the wait early, so the first key after a pause still echoes at once.
+	return time.Second
+}
+
+// previewIdleAfter is how long without a key or scroll before the preview
+// tick slows to once a second.
+const previewIdleAfter = 10 * time.Second
+
+// markActive records a key, scroll, click, drag or resize: the preview tick
+// speeds up, and a tick sleeping through the 1s idle wait wakes now. Only
+// that idle wait is cut short: waking on every event would turn a trackpad
+// burst (hundreds of wheel events) into hundreds of grid captures.
+func (m *home) markActive() {
+	now := timeNow()
+	wasIdle := now.Sub(m.lastKey) >= previewIdleAfter
+	m.lastKey = now
+	if !wasIdle {
+		return
+	}
+	select {
+	case m.previewWake <- struct{}{}:
+	default: // a wake is already pending
+	}
+}
+
+// previewWait sleeps until the next preview tick, or until markActive.
+func previewWait(interval time.Duration, wake <-chan struct{}) {
+	t := time.NewTimer(interval)
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-wake:
+	}
 }
 
 // refreshInterval is how often session status is refreshed (claude agents,
@@ -564,6 +602,7 @@ func (m *home) restartIfReady() tea.Cmd {
 
 func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	defer watchUpdate(msg)() // lag watchdog (watchdog.go)
+	countMsg(msg)
 	switch msg := msg.(type) {
 	case hideErrMsg:
 		m.errBox.Clear()
@@ -582,12 +621,13 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case previewTickMsg:
 		cmd := m.instanceChanged()
 		interval := m.previewInterval()
+		wake := m.previewWake
 		return m, tea.Batch(
 			cmd,
 			m.refreshGrid(),
 			m.refreshDock(),
 			func() tea.Msg {
-				time.Sleep(interval)
+				previewWait(interval, wake)
 				return previewTickMsg{}
 			},
 		)
@@ -792,6 +832,9 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			logEvent("mouse: first event from the terminal this run (%s)", tea.MouseEvent(msg).String())
 		}
 		m.lastMouse = time.Now()
+		if msg.Action == tea.MouseActionPress {
+			m.markActive() // a click after a pause: show the clicked tile now, not up to 1s later
+		}
 		// Clicks on the project tab row: switch tab or add a project.
 		// Clicks on the status bar (the last row).
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft && msg.Y == m.screenHeight-1 && m.state == stateDefault {
@@ -860,6 +903,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKeyPress(msg)
 	case tea.WindowSizeMsg:
 		logEvent("window %dx%d", msg.Width, msg.Height)
+		m.markActive() // refit and redraw the tiles at the new size at once
 		m.updateHandleWindowSizeEvent(msg)
 		return m, nil
 	case error:
@@ -975,7 +1019,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		logEvent("dropped a split mouse event (%d chars)", len(msg.Runes))
 		return m, nil
 	}
-	m.lastKey = time.Now()
+	m.markActive()
 	m.sel.shown = false // a key press clears the selection highlight
 	// Keys typed into a session are in keys.log already; describing the full
 	// state for each of them (hundreds a second when scrolling) costs CPU.
