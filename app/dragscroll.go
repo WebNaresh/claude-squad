@@ -89,7 +89,7 @@ func (m *home) onDragScroll(msg dragScrollMsg) tea.Cmd {
 	default:
 	}
 	// The dragged tile has focus, so it is recaptured every frame anyway.
-	m.lastKey = timeNow()
+	m.markActive()
 	return dragTick(msg.gen)
 }
 
