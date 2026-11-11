@@ -276,6 +276,13 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Fix:** captures in a background goroutine, buffered logs, cached grid render, no spinner ticks.
 - **Guard:** `~/.claude-squad/usage.log` (30s CPU/render counters).
 
+### cs at ~11% CPU while nobody types
+- **Saw (2026-11-11):** `cs-fork` steady at 12–15% CPU in `top`; usage.log showed ~340 renders/30s (11/s, ~5ms each) in the idle list view, ~20% while typing.
+- **Cause:** the preview tick fired every 400ms forever once idle, and each tick fans out into ~4 messages (preview, grid capture, dock capture, metadata), each a full-screen View; most of that time is lipgloss/ansi width measuring.
+- **Fix:** after 10s without a key, scroll or drag the tick waits 1s (`previewIdleAfter`, `previewInterval`, `app/app.go`). `markActive` (every `lastKey` site: keys, wheel, dock wheel, drag scroll) wakes a sleeping tick at once (`previewWait`), so the first key after a pause still echoes without the 1s wait. Typing speeds (50ms/100ms) are unchanged.
+- **Result:** idle previewTickMsg 75 → 30 per 30s, renders ~340 → ~210 per 30s. What's left idle: the 1s metadata refresh (`claude agents`, session status; kept for quick status changes) and the 2s source-control tick.
+- **Guard:** `TestPreviewIntervalSlowsWhenIdle`, `TestMarkActiveWakesIdleTick` (`app/previewidle_test.go`). usage.log now ends each line with `msgs <type>:<count> …`, the busiest Update() message types in those 30s (`countMsg`, `app/usage.go`); read it first when renders look high.
+
 ### Closing a terminal left its tile up for a second
 - **Cause:** after the kill, the session list was reloaded (`claude agents`) before the tile went.
 - **Fix:** the tile is dropped at once and kept out for 5s; a capture started before the close is discarded (`app/terminal.go`, `app/app.go`, `app/grid.go`).
