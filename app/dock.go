@@ -254,7 +254,7 @@ func (m *home) handleDockMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
 		case keyQueue <- queuedKey{target: name, msg: key, at: timeNow(), wheel: 1}:
 		default:
 		}
-		m.lastKey = timeNow()
+		m.markActive()
 		m.skipRender = true // the next preview tick shows it (see handleGridMouse)
 		return nil, true
 	}
