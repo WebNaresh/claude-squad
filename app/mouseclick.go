@@ -152,7 +152,7 @@ func (m *home) handleGridMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
 		case keyQueue <- queuedKey{target: target, msg: key, at: timeNow(), wheel: 1}:
 		default:
 		}
-		m.lastKey = time.Now() // redraw tiles fast while scrolling (previewInterval)
+		m.markActive() // redraw tiles fast while scrolling (previewInterval)
 		// A trackpad sends scroll events in bursts of hundreds; drawing a
 		// frame for each kept the UI busy and keys waited (2,000+ in two
 		// minutes once). The next preview tick shows the scrolled tile.
