@@ -96,7 +96,9 @@ Profiles → (their profile) → Keyboard → "+":
   stack names the blocking call. A flood (>60 messages/s) lists them by type.
 - `~/.claude-squad/usage.log` every 30s: cs CPU, `renders=N/30s avg=…` and the
   Mac's load. Load far above the core count (20–30 with ~30 Claude processes)
-  slows everything, cs included.
+  slows everything, cs included. The line ends with `msgs <type>:<count> …`:
+  the message types behind those renders (each message is a View), so a high
+  `renders=` names its source.
 - Known cause, fixed: trackpad scroll bursts (2,000+ wheel events in two
   minutes) each drew a frame; wheel events now skip the redraw.
 
