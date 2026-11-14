@@ -157,6 +157,7 @@ func (m *home) refreshGrid() tea.Cmd {
 				m.gridMarkdown[e.SessionID] = &ui.MarkdownCache{}
 			}
 			j.md = m.gridMarkdown[e.SessionID]
+			j.back = m.viewScroll[e.SessionID]
 		}
 		jobs = append(jobs, j)
 	}
@@ -196,6 +197,7 @@ type gridJob struct {
 	cursorFor string
 	dup       bool // its conversation is open in another tile too
 	md        *ui.MarkdownCache
+	back      viewPos // view-only tile: how far it is scrolled back
 }
 
 type gridCapturedMsg struct {
@@ -247,7 +249,11 @@ func captureTile(j gridJob, w, h int) ui.GridTile {
 	if e.Kind == session.KindTerminal {
 		md, version := e.Conversation()
 		t.Status = "view only"
-		t.Content = j.md.Render(md, version, w)
+		var back int
+		t.Content, back = viewOnlyWindow(j.md.Render(md, version, w), h, j.back, e.SessionID)
+		if back > 0 {
+			t.Status = fmt.Sprintf("view only · ↑%d", back)
+		}
 		return t
 	}
 	name, err := e.EnsureLive(w, h)
