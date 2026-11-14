@@ -229,6 +229,9 @@ type home struct {
 	previewWake    chan struct{} // cuts the preview tick's idle wait short (markActive)
 	lastPick       time.Time
 	gridMarkdown   map[string]*ui.MarkdownCache
+	// viewScroll: how many lines a view-only tile is scrolled back from its
+	// bottom, by session ID. The wheel moves it (viewonlyscroll.go).
+	viewScroll map[string]viewPos
 	// paneWidth is the width of the session pane / grid area
 	paneWidth int
 	// leftWidth is the width of the Source Control + dock column. dockNames
@@ -325,6 +328,7 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 	h.scLoading = map[string]time.Time{}
 	h.scCache = map[string]scStatusMsg{}
 	h.gridMarkdown = map[string]*ui.MarkdownCache{}
+	h.viewScroll = map[string]viewPos{}
 	h.startedAt = time.Now()
 	var focus string
 	h.savedFrame, h.savedW, h.savedH, focus, h.restoredRow = loadFrame()
