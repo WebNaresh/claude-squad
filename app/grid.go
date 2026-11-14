@@ -271,7 +271,7 @@ func captureTile(j gridJob, w, h int) ui.GridTile {
 	}
 	dropped := 0
 	if !tmux.IsScrolled(name) {
-		if dead, ok := deadPaneContent(name, t.Content, h); ok {
+		if dead, ok := deadPaneContent(name, t.Content, h); ok && session.PaneDead(name) {
 			t.Content = dead
 		} else {
 			t.Content, dropped = fillFromHistory(name, t.Content)
@@ -341,13 +341,30 @@ func fillFromHistory(name, content string) (string, int) {
 func deadPaneContent(name, content string, h int) (string, bool) {
 	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
 	rows := contentRows(content)
-	if rows == 0 || !strings.HasPrefix(strings.TrimSpace(ansi.Strip(lines[rows-1])), "Pane is dead") {
+	at := deadLineAt(lines[:rows])
+	if at < 0 {
 		return "", false
 	}
-	if rows >= 2 && strings.TrimSpace(ansi.Strip(lines[rows-2])) != "" {
+	if at >= 1 && strings.TrimSpace(ansi.Strip(lines[at-1])) != "" {
 		return "", false // text right above it: nothing pushed away
 	}
 	return deadPaneHistory(name, h)
+}
+
+// deadLineAt is the row where tmux's "Pane is dead (status N, <date>)" starts
+// among the last rows, or -1. In a narrow tile the line wraps, so the last
+// row is only its tail, e.g. "6)" (practice-stack #2944, 2026-11-14).
+func deadLineAt(lines []string) int {
+	end := len(lines)
+	for end > 0 && strings.TrimSpace(ansi.Strip(lines[end-1])) == "" {
+		end--
+	}
+	for i := end - 1; i >= 0 && i >= end-3; i-- {
+		if strings.HasPrefix(strings.TrimSpace(ansi.Strip(lines[i])), "Pane is dead") {
+			return i
+		}
+	}
+	return -1
 }
 
 // deadPaneHistory is a dead pane's whole history with the blank gap dropped,
@@ -372,8 +389,12 @@ func compactDead(all []string, h int) []string {
 	if end == 0 {
 		return nil
 	}
-	dead := all[end-1]
-	top := end - 1
+	start := deadLineAt(all[:end])
+	if start < 0 {
+		start = end - 1
+	}
+	dead := all[start:end] // more than one row when tmux wrapped it
+	top := start
 	for top > 0 && blank(all[top-1]) {
 		top--
 	}
@@ -381,7 +402,7 @@ func compactDead(all []string, h int) []string {
 	if top > 0 {
 		out = append(out, "")
 	}
-	out = append(out, dead)
+	out = append(out, dead...)
 	if h > 0 && len(out) > h {
 		out = out[len(out)-h:]
 	}
