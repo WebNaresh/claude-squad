@@ -135,22 +135,31 @@ func (m *home) handleGridMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
 	entry := rows[hit.idx].row
 	switch msg.Button {
 	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
-		target := ""
-		if entry.Instance != nil {
-			target = entry.Instance.TmuxName()
-		} else if entry.External != nil {
-			target = entry.External.Live
-		}
-		if target == "" {
-			return nil, true
-		}
-		key := tea.KeyMsg{Type: tea.KeyUp}
-		if msg.Button == tea.MouseButtonWheelDown {
-			key = tea.KeyMsg{Type: tea.KeyDown}
-		}
-		select {
-		case keyQueue <- queuedKey{target: target, msg: key, at: timeNow(), wheel: 1}:
-		default:
+		if e := entry.External; e != nil && e.Kind == session.KindTerminal {
+			// View-only: no tmux pane to scroll; cs draws it, so cs scrolls it.
+			step := 1
+			if msg.Button == tea.MouseButtonWheelDown {
+				step = -1
+			}
+			m.viewScroll[e.SessionID] = scrollViewOnly(m.viewScroll[e.SessionID], step, e.SessionID)
+		} else {
+			target := ""
+			if entry.Instance != nil {
+				target = entry.Instance.TmuxName()
+			} else if entry.External != nil {
+				target = entry.External.Live
+			}
+			if target == "" {
+				return nil, true
+			}
+			key := tea.KeyMsg{Type: tea.KeyUp}
+			if msg.Button == tea.MouseButtonWheelDown {
+				key = tea.KeyMsg{Type: tea.KeyDown}
+			}
+			select {
+			case keyQueue <- queuedKey{target: target, msg: key, at: timeNow(), wheel: 1}:
+			default:
+			}
 		}
 		m.markActive() // redraw tiles fast while scrolling (previewInterval)
 		// A trackpad sends scroll events in bursts of hundreds; drawing a
