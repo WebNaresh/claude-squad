@@ -161,3 +161,15 @@ func TestDeadTileOtherErrorStays(t *testing.T) {
 		t.Fatal("session gone")
 	}
 }
+
+// gai's own words when its login check can't reach GitHub, in a 47-col tile
+// where tmux wrapped "Pane is dead" (#2944).
+func TestGaiCanRetryUnreachable(t *testing.T) {
+	screen := "  … GitHub unreachable — retry 3/3 in 15s\nerror: could not reach GitHub (gh is logged in)\n. Check the network and try again.\nPane is dead (status 1, Sat Nov 14 10:06:17 202\n6)\n"
+	if !gaiCanRetry(screen) {
+		t.Fatalf("not retryable: %q", gaiLastWords(screen))
+	}
+	if strings.Contains(gaiLastWords(screen), "6)") {
+		t.Fatalf("dead line tail in last words: %q", gaiLastWords(screen))
+	}
+}
