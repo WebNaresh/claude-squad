@@ -312,8 +312,9 @@ func gaiFailedRecently(project string, n int) bool {
 }
 
 // gaiNetworkErr matches what gh prints when GitHub can't be reached or is
-// failing. Keep it in step with _gai_gh_read's list in gai-tools `gai`.
-var gaiNetworkErr = regexp.MustCompile(`(?i)i/o timeout|dial tcp|error connecting to|connection (reset|refused)|tls handshake|no such host|network is unreachable|client\.timeout|unexpected eof|HTTP 50[234]|status code: 50[234]`)
+// failing. Keep it in step with _gai_gh_read's list in gai-tools `gai`, plus
+// gai's own words when its gh login check can't reach GitHub (#2944).
+var gaiNetworkErr = regexp.MustCompile(`(?i)i/o timeout|dial tcp|error connecting to|connection (reset|refused)|tls handshake|no such host|network is unreachable|client\.timeout|unexpected eof|HTTP 50[234]|status code: 50[234]|could not reach github|github unreachable`)
 
 // deadChecked: when GitHub was last asked about a dead tile, by session name.
 var deadChecked = map[string]time.Time{}
@@ -386,8 +387,11 @@ func gaiCanRetry(history string) bool {
 func gaiLastWords(screen string) string {
 	var keep []string
 	lines := strings.Split(screen, "\n")
+	if at := deadLineAt(lines); at >= 0 {
+		lines = lines[:at] // the dead line, wrapped tail too
+	}
 	for i := len(lines) - 1; i >= 0 && len(keep) < 4; i-- {
-		if l := strings.TrimSpace(lines[i]); l != "" && !strings.HasPrefix(l, "Pane is dead") {
+		if l := strings.TrimSpace(lines[i]); l != "" {
 			keep = append([]string{l}, keep...)
 		}
 	}
