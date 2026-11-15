@@ -69,11 +69,12 @@ func RunIssuesDaemon() error {
 	issuesAt := map[string]time.Time{}
 	issues := map[string][]session.Issue{}
 	said := map[string]string{}
-	ready := map[string]bool{}      // projects already on a fresh base for their new batch
-	saidBase := map[string]string{} // last "not starting a new batch yet" reason logged
-	limitDone := map[string]bool{}  // sessions already resumed after a usage limit
-	colored := loadColors()         // the /color cs gave each issue session ("" = the user's own)
-	comments := loadCommentState()  // GitHub comments already typed into issue tiles (issuecomments.go)
+	ready := map[string]bool{}       // projects already on a fresh base for their new batch
+	prSeen := map[string]time.Time{} // when each project last had an open PR of its own
+	saidBase := map[string]string{}  // last "not starting a new batch yet" reason logged
+	limitDone := map[string]bool{}   // sessions already resumed after a usage limit
+	colored := loadColors()          // the /color cs gave each issue session ("" = the user's own)
+	comments := loadCommentState()   // GitHub comments already typed into issue tiles (issuecomments.go)
 	nextLimitCheck := time.Time{}
 	nextScan := time.Time{}
 
@@ -109,6 +110,16 @@ func RunIssuesDaemon() error {
 		if len(queue) > 0 {
 			next := queue[0]
 			queue = queue[1:]
+			// Queued minutes ago: it may have closed since (a PR merged).
+			if closed, err := session.IssueClosed(next.project, next.issue.Number); err != nil || closed {
+				why := "it is closed on GitHub"
+				if err != nil {
+					why = fmt.Sprintf("GitHub didn't say whether it is still open (%v)", err)
+				}
+				logEvent("daemon: not starting #%d in %s: %s", next.issue.Number, filepath.Base(next.project), why)
+				session.CloseQueuedIssue(next.project, next.issue.Number)
+				continue
+			}
 			name, err := session.StartIssueSession(next.project, next.issue)
 			if err != nil {
 				logEvent("daemon: could not start #%d in %s: %v", next.issue.Number, filepath.Base(next.project), err)
@@ -216,6 +227,19 @@ func RunIssuesDaemon() error {
 			if offer == 0 {
 				continue
 			}
+			// The project's PR just went away (merged): for a moment GitHub
+			// still shows its issues open and on no PR, and they were all
+			// started again (practice-stack #3244 → #3254, 2026-11-14). Wait
+			// until GitHub has closed them and the list has caught up.
+			if pr > 0 {
+				prSeen[p] = time.Now()
+			} else if since := time.Since(prSeen[p]); since < prSettle {
+				if key := "settle"; said[p] != key {
+					said[p] = key
+					logEvent("daemon: %s: its PR closed %s ago; new batch waits %s for GitHub to close that PR's issues", filepath.Base(p), since.Round(time.Second), prSettle)
+				}
+				continue
+			}
 			// A new batch (no open PR of the project's own): start it from an
 			// up-to-date main, not the merged branch (batchbase.go). Only when
 			// an issue is about to start; once its PR exists, the batch
@@ -297,6 +321,10 @@ func RunIssuesDaemon() error {
 var gaiFailed = map[string]time.Time{}
 
 const gaiRetryAfter = 30 * time.Minute
+
+// prSettle: how long after a project's PR goes away a new batch waits, so
+// the list read next no longer shows the merged PR's issues as free.
+const prSettle = 2 * time.Minute
 
 // prAsked: when gai's "which PR" was last left for the user, per project.
 var prAsked = map[string]time.Time{}
