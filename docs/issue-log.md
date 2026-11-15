@@ -277,6 +277,12 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Cause:** Terminal.app sends Shift+↑/↓ as plain ↑/↓ unless its profile maps them; keys.log never shows shift+up/down.
 - **Fix:** Shift+←/→ run through tiles in reading order, wrapping rows; ← goes to the dock only from the first tile (`app/grid.go` moveTile). Terminal mapping steps in `docs/tiles-mouse-debugging.md`.
 
+### Add project refused a new empty folder (2026-11-15)
+- **Saw:** + add project → picked `coding-line/global_career_guidance` → Choose; nothing was added. activity.log: "… is not a git repository" (19:06:49, 19:07:09).
+- **Cause:** the folder was new and empty, with no `git init`; cs only added git repositories.
+- **Fix:** a picked folder that isn't a repository gets `git init -b main` and is added (`initProjectFolder`, `app/folderdialog.go`). It still refuses, and says why: the home folder and its Desktop, Documents, Downloads, Library, Movies, Music, Pictures, Public; and a folder that holds other repositories (e.g. `coding-line` itself). The new repository has no commits yet.
+- **Guard:** `TestInitProjectFolder`.
+
 ## Speed
 
 ### Lag while typing
