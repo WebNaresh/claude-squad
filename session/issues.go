@@ -595,6 +595,29 @@ func QueueIssueSession(dir string, issue Issue) (string, error) {
 	return name, nil
 }
 
+// IssueClosed asks GitHub, right now, whether issue n is closed. The issue
+// list can be a minute old, and in the seconds after a PR merges its issues
+// still look open with no PR (practice-stack, 2026-11-14: 8 issues #3244 had
+// just closed were started again and piled onto a new PR #3254).
+func IssueClosed(dir string, n int) (bool, error) {
+	cmd := exec.Command("gh", "issue", "view", strconv.Itoa(n), "--json", "state", "--jq", ".state")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(out)) != "OPEN", nil
+}
+
+// CloseQueuedIssue ends issue n's "queued" tile, if that's all it is.
+func CloseQueuedIssue(dir string, n int) {
+	name := IssueSessionName(dir, n)
+	out, _ := exec.Command("tmux", "show-options", "-v", "-t", name, queuedOption).Output()
+	if strings.TrimSpace(string(out)) == "1" {
+		_ = exec.Command("tmux", "kill-session", "-t", "="+name).Run()
+	}
+}
+
 // CloseStaleQueuedIssues ends "queued" issue sessions left by an earlier cs
 // run: the queue lives in memory, so nothing would ever start them.
 func CloseStaleQueuedIssues() {
