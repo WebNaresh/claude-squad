@@ -71,6 +71,12 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Fix:** issue sessions keep their pane when gai exits (`remain-on-exit`), so the tile shows what gai said and still counts as busy. The runner logs gai's last lines ("its tile keeps what gai said: …") and doesn't start that issue again for 30 min after you close the tile (`gaiFailed`, `app/issuesdaemon.go`; `PaneDead`, `session/issues.go`). The issue picker's queue checks `PaneDead` too (`app/issues.go`). Once Claude works in the tile, remain-on-exit goes off again (`KeepOnExit`), so quitting Claude still closes the session.
 - **Guard:** live, a failing command on `tmux -L cstest` with remain-on-exit kept its error on screen, `pane_dead`=1.
 
+### Runner started issues a just-merged PR had closed (2026-11-14)
+- **Saw:** practice-stack: right after PR #3244 merged (19:27:36 IST), 8 tiles opened on #3238–#3246, every Claude said "already fixed, released, no code change", and gai put all 8 on a new empty PR #3254.
+- **Cause:** a race on GitHub's side. The list read at 19:27:45 no longer had #3244 as an open PR, and GitHub hadn't yet closed its issues (closed 19:27:41–53) or listed them on the merged PR. For those seconds they looked open and free ("PR #0 … 14 issue(s) to start"). At 19:28:03 the runner queued 8 of them from that list and started them one by one, never asking again.
+- **Fix:** (1) after a project's own PR goes away, a new batch waits `prSettle` (2 min); the log says "its PR closed … ago; new batch waits". (2) Right before gai starts each queued issue, the runner asks GitHub whether it is still open (`session.IssueClosed`). A closed issue, or no answer, isn't started, and its "queued" tile is closed (`CloseQueuedIssue`). activity.log: "not starting #N …" (`app/issuesdaemon.go`).
+- **Not covered:** an issue closed by hand while gai is already running in its tile.
+
 ### Dead issue tile blank, only "Pane is dead" (2026-11-04)
 - **Saw:** abhyaiska #1103 and #1105 tiles: empty, with just `Pane is dead (status 1, …)` at the bottom. activity.log's "its tile keeps what gai said:" was empty for #1103.
 - **Cause:** gai's pane was 50 rows when it exited; tmux wrote "Pane is dead" on row 50. cs then shrank the pane to its 29-row tile and tmux pushed the top 21 rows (gai's error with them) into the scroll-back. The real errors were network blips: #1103 `gh auth status` failed offline, which gai reports as "gh CLI not authenticated" (gh was logged in); #1105 `TLS handshake timeout` on the PR-body GraphQL write.
@@ -414,6 +420,12 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Cause:** (1) one click on "↺ reopen" in Recently closed came as two mouse events; activity.log 13:07:14.707 and .722 "reopening cc_practice-stack (06862012…)" twice, so two `claude --resume` of the same session (`cc_practice-stack`, `cc_practice-stack_2`). (2) Closing a tile hid every tile with its session ID for 20s (`closedKeys` "sid:"), so the other tile vanished too.
 - **Fix:** a session reopened in the last 10s isn't reopened again (`reopenHold`, `app/recentclosed.go`). A closed tile is hidden by session ID only when no other tile has that conversation; then only its exiting Claude (a view-only `pid-N` row) is hidden by it (`hideClosed`, `ghostKey`, `app/terminal.go`). Closing a reopened session lifts the 10s hold.
 - **Guard:** `TestReopenOnceAndCloseOne`; activity.log shows one "reopening …" per click.
+
+### Closed tile came back as "view only" and W refused to close it (#3253, 2026-11-14)
+- **Saw:** admin-users-export-feedback-#3253 closed with W at 20:13:09; at 20:13:29 it was back as `pid-11997 … (own terminal · view only)`, and W said "runs in its own terminal window; close it there". There was no such window.
+- **Cause:** `KillSession` killed the tmux session and sent SIGTERM, then SIGKILL, to the pane's Claude (#2239). This Claude was stuck in the kernel (`ps` state `U`, then `E` after SIGKILL), so it lingered for hours with its `~/.claude/sessions/<pid>.json`, and `claude agents` kept listing it. `hideClosed` hides a closed tile's exiting Claude for only 20s, so it came back as a view-only tile.
+- **Fix:** `ListExternalSessions` (`session/external.go`) hides a Claude whose parent is cs's tmux server when no pane holds it: that is a closed tile's leftover, with no window and nothing that can type into it. It doesn't need any memory of the close, so it also works after cs restarts. It is hidden, not killed: a tile started between the pane list and the check looks the same for one refresh.
+- **Guard:** none automatic (needs a process stuck in the kernel). Check: `ps -o ppid= -p <pid>` equals `tmux display -p '#{pid}'` and `tmux list-panes -a -F '#{pane_pid}'` doesn't list it → no tile.
 
 ### Follow-up issues started before the PR they wait on was merged (glitchgrab #627/#628, 2026-10-21)
 - **Saw:** "[Follow-up] … after #625 deploys" and "… after #620 deploys" were run by the issue runner right away, landed in the same PR #626 as #625/#620 and closed with it, before anything was deployed.
