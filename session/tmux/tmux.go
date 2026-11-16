@@ -559,17 +559,42 @@ func scrolledRange(target string) []string {
 		return nil
 	}
 	out, err := exec.Command("tmux", "display-message", "-p", "-t", target,
-		"#{pane_in_mode} #{scroll_position} #{pane_height}").Output()
+		"#{pane_in_mode} #{scroll_position} #{pane_height} #{history_size}").Output()
 	if err != nil {
 		return nil
 	}
-	var inMode, pos, height int
-	if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%d %d %d", &inMode, &pos, &height); err == nil && inMode == 1 && pos > 0 {
+	var inMode, pos, height, hist int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%d %d %d %d", &inMode, &pos, &height, &hist); err == nil && inMode == 1 && pos > 0 {
+		if grew := scrollHold(target, hist); grew > 0 {
+			// tmux counts the scroll position from the bottom, so every line
+			// Claude writes slid the text being read down a line, and a long
+			// reply carried it to the bottom (2026-11-16). Scroll back up by
+			// what arrived, so the text stays where it was.
+			_ = exec.Command("tmux", "send-keys", "-t", target, "-X", "-N", strconv.Itoa(grew), "scroll-up").Run()
+			pos = min(pos+grew, hist)
+		}
 		return []string{"-S", strconv.Itoa(-pos), "-E", strconv.Itoa(height - 1 - pos)}
 	} else if err == nil && inMode == 0 {
 		SetScrolled(target, false) // back at the live bottom
 	}
 	return nil
+}
+
+// histSeen: each scrolled-back pane's history size at the last capture.
+var histSeen = map[string]int{}
+
+// scrollHold records a scrolled pane's history size and returns how many
+// lines were added since the last capture (0 the first time, or when the
+// history was cleared and shrank).
+func scrollHold(target string, hist int) int {
+	scrolledMu.Lock()
+	defer scrolledMu.Unlock()
+	prev, ok := histSeen[target]
+	histSeen[target] = hist
+	if !ok || hist <= prev {
+		return 0
+	}
+	return hist - prev
 }
 
 // CaptureScreen returns a pane's visible rows exactly as tmux wraps them
@@ -666,6 +691,7 @@ func SetScrolled(name string, on bool) {
 		scrolled[name] = true
 	} else {
 		delete(scrolled, name)
+		delete(histSeen, name) // the next scroll-back starts counting afresh
 	}
 }
 
