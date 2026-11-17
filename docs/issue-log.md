@@ -284,6 +284,19 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Fix:** a picked folder that isn't a repository gets `git init -b main` and is added (`initProjectFolder`, `app/folderdialog.go`). It still refuses, and says why: the home folder and its Desktop, Documents, Downloads, Library, Movies, Music, Pictures, Public; and a folder that holds other repositories (e.g. `coding-line` itself). The new repository has no commits yet.
 - **Guard:** `TestInitProjectFolder`.
 
+### Every tile gone after a laptop restart (2026-11-17)
+- **Saw:** after a reboot, cs opened with every project empty; practice-stack had 6 tiles (5 issues + a general one), 11 across 4 projects. No ↺ reopen for them either.
+- **Cause:** tiles live in the tmux server and a reboot ends it. cs keeps no list of outside tiles (`state.json` instances `[]`), and ↺ reopen only lists ⌃Space W closes. Conversations were all safe on disk.
+- **Fix:** cs saves the open tmux Claude tiles with the tmux server's `pid start_time` in `~/.claude-squad/live-tiles.json` on each refresh. When the server is a new one, every saved tile not open now (and not closed by the user after the save) is resumed with `claude --resume`, issue tiles under their `cc_<folder>_i<N>` name, and the message line says "Reopened N tile(s) closed by a restart" (`noteLiveTiles`, `app/rebootrestore.go`; activity.log `lost tiles:`). Only tiles in this tmux server count, so a test cs never picks up the user's real `claude agents` sessions. Not covered: a turn that was mid-reply restarts idle; type `continue` in it.
+- **Guard:** `TestCurrentTilesKeepsKnownConversation`, `TestLostTilesSkipsOpenAndUserClosed`; live on `tmux -L cstest` with a stand-in claude (2 tiles reopened with the right `--resume` ids).
+
+### Clicking a sent image did nothing after a restart (2026-11-17)
+- **Saw:** #3306 tile, clicks on its `[image] /private/tmp/claude-501/…/scratchpad/*.png` lines opened nothing, no message.
+- **Cause:** macOS empties `/private/tmp` on every restart, and Claude's scratchpad (where screenshots are saved) is there. The files are gone; `SentFiles` drops missing files, so the click matched nothing and stayed silent.
+- **Fix:** a click on a sent-file block (`›` / `[image]` rows) whose file is gone says "<name> is gone: it was in /tmp, which a restart empties. Ask Claude in this tile to take it again" (`goneImageAt`, `app/mouseclick.go`).
+- **Came back (same hour): Finder opened an empty scratchpad.** The resumed Claude made its scratchpad folder again (empty), so the click resolved to that folder and opened it. Now a sent-image block that resolves only to a folder, with no sent file left in it, gets the same "is gone" message (`clickAt`, `app/mouseclick.go`). The images still show on claude.ai (Remote Control) because SendUserFile uploaded them; cs only has the local files.
+- **Guard:** `TestGoneImageClickSaysWhy`.
+
 ## Speed
 
 ### Lag while typing
