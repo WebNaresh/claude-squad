@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -232,11 +233,22 @@ func (m *home) clickAt(hit gridHit, e *session.ExternalSession, x int) tea.Cmd {
 				logEvent("clicked a cut-off image path in %s: %s", e.Name, filepath.Base(f))
 				return openGallery(e, f)
 			}
+			// The image itself is gone and only its folder is left (a resumed
+			// Claude makes an empty scratchpad again after a restart wiped
+			// /tmp): say so instead of opening an empty folder in Finder.
+			if err := goneImageAt(hit.lines, hit.row); err != nil {
+				logEvent("clicked a gone image in %s: %v", e.Name, err)
+				return func() tea.Msg { return err }
+			}
 		}
 		return openPath(p)
 	}
 	if file := imageAt(hit.lines, hit.row, e); file != "" {
 		return openGallery(e, file)
+	}
+	if err := goneImageAt(hit.lines, hit.row); err != nil {
+		logEvent("clicked a gone image in %s: %v", e.Name, err)
+		return func() tea.Msg { return err }
 	}
 	return nil
 }
@@ -251,27 +263,7 @@ func sentFiles(e *session.ExternalSession) []string {
 // the next row, the path wrapped over several rows. The block's text is
 // matched against the files the session sent, by file name.
 func imageAt(lines []string, row int, e *session.ExternalSession) string {
-	isStart := func(l string) bool { return strings.HasPrefix(strings.TrimSpace(l), "›") }
-	isEnd := func(l string) bool {
-		t := strings.TrimSpace(l)
-		return t == "" || strings.HasPrefix(t, "●") || strings.HasPrefix(t, "⏺")
-	}
-	if isEnd(lines[row]) {
-		return ""
-	}
-	start := row
-	for start > 0 && row-start < 6 && !isStart(lines[start]) && !isEnd(lines[start-1]) {
-		start--
-	}
-	end := row
-	for end+1 < len(lines) && end-row < 6 && !isStart(lines[end+1]) && !isEnd(lines[end+1]) {
-		end++
-	}
-	var b strings.Builder
-	for _, l := range lines[start : end+1] {
-		b.WriteString(strings.Join(strings.Fields(wrapRow(l)), ""))
-	}
-	block := b.String()
+	block, _ := imageBlock(lines, row)
 	if !strings.Contains(block, "[image]") && !strings.Contains(block, "/") {
 		return ""
 	}
@@ -286,6 +278,66 @@ func imageAt(lines []string, row int, e *session.ExternalSession) string {
 		}
 	}
 	return best
+}
+
+// goneImageRe finds an image file name in a joined "›"/[image] block.
+var goneImageRe = regexp.MustCompile(`(?i)([\w.\-@+]+\.(?:png|jpe?g|gif|webp|heic|pdf))`)
+
+// goneImageAt says why a click on a sent image's line opened nothing: its
+// file no longer exists. Claude's scratchpad lives in /private/tmp, which
+// macOS empties on every restart, so after a reboot every image sent before
+// it is gone and the click did nothing at all (2026-11-17).
+func goneImageAt(lines []string, row int) error {
+	block, sent := imageBlock(lines, row)
+	if !sent {
+		return nil
+	}
+	m := goneImageRe.FindStringSubmatch(block)
+	if m == nil {
+		return nil
+	}
+	// The whole path, when the block holds it: an image that is still there
+	// (cs just couldn't match it to a sent file) is not "gone".
+	if i := strings.Index(block, "/"); i >= 0 {
+		if j := strings.Index(block[i:], m[1]); j >= 0 {
+			if _, err := os.Stat(block[i : i+j+len(m[1])]); err == nil {
+				return nil
+			}
+		}
+	}
+	if strings.Contains(block, "/tmp/") {
+		return fmt.Errorf("%s is gone: it was in /tmp, which a restart empties. Ask Claude in this tile to take it again", m[1])
+	}
+	return fmt.Errorf("%s is gone: the file no longer exists", m[1])
+}
+
+// imageBlock joins the rows of the "›" block (one sent file) around row,
+// without spaces. sent is true when the rows are Claude's sent-file listing
+// (a "›" or "[image]" row), not any text that names a file.
+func imageBlock(lines []string, row int) (block string, sent bool) {
+	isStart := func(l string) bool { return strings.HasPrefix(strings.TrimSpace(l), "›") }
+	isEnd := func(l string) bool {
+		t := strings.TrimSpace(l)
+		return t == "" || strings.HasPrefix(t, "●") || strings.HasPrefix(t, "⏺")
+	}
+	if isEnd(lines[row]) {
+		return "", false
+	}
+	start := row
+	for start > 0 && row-start < 6 && !isStart(lines[start]) && !isEnd(lines[start-1]) {
+		start--
+	}
+	end := row
+	for end+1 < len(lines) && end-row < 6 && !isStart(lines[end+1]) && !isEnd(lines[end+1]) {
+		end++
+	}
+	var b strings.Builder
+	for _, l := range lines[start : end+1] {
+		t := strings.TrimSpace(l)
+		sent = sent || strings.HasPrefix(t, "›") || strings.HasPrefix(t, "[image]")
+		b.WriteString(strings.Join(strings.Fields(wrapRow(l)), ""))
+	}
+	return b.String(), sent
 }
 
 // cutImageAt finds the sent file whose path starts with the text of the
