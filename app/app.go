@@ -164,7 +164,10 @@ type home struct {
 	screenWidth, screenHeight int
 	// repoRoots caches the git root of each external session's folder;
 	// sessionRoots are the projects that currently have a running session
-	repoRoots    map[string]string
+	repoRoots map[string]string
+	// tmuxServer is the tmux server live-tiles.json was last saved for
+	// (app/rebootrestore.go).
+	tmuxServer   string
 	sessionRoots []string
 	// updater rebuilds cs when its source changes; nil when not run via the launcher
 	updater *updater
@@ -808,6 +811,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			focus,
 			tickUpdateMetadataCmd(m.snapshotActiveInstances(), m.list.GetSelectedInstance(), m.refreshInterval()),
 			m.restartIfReady(),
+			m.noteLiveTiles(m.list.ExternalSessions()),
 		)
 	case sessionMovedMsg:
 		m.setExternalSessions(msg.sessions)
