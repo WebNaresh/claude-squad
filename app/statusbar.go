@@ -39,7 +39,7 @@ type prEntry struct {
 type prMsg struct {
 	root, branch string
 	pr           git.PullRequest
-	ok           bool
+	ok, failed   bool
 }
 
 type pushDoneMsg struct {
@@ -76,12 +76,18 @@ func (m *home) refreshPR(root, branch string) tea.Cmd {
 	e.loading = true
 	m.bar.prs[root] = e
 	return func() tea.Msg {
-		pr, ok := git.CurrentPR(root)
-		return prMsg{root: root, branch: branch, pr: pr, ok: ok}
+		pr, ok, failed := git.CurrentPR(root)
+		return prMsg{root: root, branch: branch, pr: pr, ok: ok, failed: failed}
 	}
 }
 
 func (m *home) applyPR(msg prMsg) {
+	// GitHub didn't answer: keep the branch's PR shown, try again next time.
+	if old := m.bar.prs[msg.root]; msg.failed && old.ok && old.branch == msg.branch {
+		old.loading, old.fetched = false, time.Now()
+		m.bar.prs[msg.root] = old
+		return
+	}
 	m.bar.prs[msg.root] = prEntry{branch: msg.branch, pr: msg.pr, ok: msg.ok, fetched: time.Now()}
 }
 
@@ -188,10 +194,10 @@ func (m *home) stripPR(root string, number int) (git.PullRequest, bool) {
 }
 
 type stripPRMsg struct {
-	root string
-	pr   git.PullRequest
-	ok   bool
-	num  int
+	root       string
+	pr         git.PullRequest
+	ok, failed bool
+	num        int
 }
 
 // refreshStripPR reads the checks of the PR the strip shows, at most every
@@ -215,12 +221,17 @@ func (m *home) refreshStripPR(root string) tea.Cmd {
 	e.loading = true
 	m.bar.stripPRs[root] = e
 	return func() tea.Msg {
-		pr, ok := git.PRByNumber(root, number)
-		return stripPRMsg{root: root, pr: pr, ok: ok, num: number}
+		pr, ok, failed := git.PRByNumber(root, number)
+		return stripPRMsg{root: root, pr: pr, ok: ok, failed: failed, num: number}
 	}
 }
 
 func (m *home) applyStripPR(msg stripPRMsg) {
+	if old := m.bar.stripPRs[msg.root]; msg.failed && old.ok && old.pr.Number == msg.num {
+		old.loading, old.fetched = false, time.Now()
+		m.bar.stripPRs[msg.root] = old
+		return
+	}
 	m.bar.stripPRs[msg.root] = prEntry{pr: msg.pr, ok: msg.ok, fetched: time.Now()}
 }
 
@@ -398,9 +409,9 @@ func tabChecksText(pr git.PullRequest) (string, lipgloss.Color) {
 }
 
 type tabChecksMsg struct {
-	root string
-	pr   git.PullRequest
-	ok   bool
+	root       string
+	pr         git.PullRequest
+	ok, failed bool
 }
 
 // tabChecksEvery is how often each project's checks are read: one gh call
@@ -423,19 +434,22 @@ func (m *home) refreshTabChecks() tea.Cmd {
 		_, number := prRoom(m.issueCache[root])
 		cmds = append(cmds, func() tea.Msg {
 			var pr git.PullRequest
-			var ok bool
+			var ok, failed bool
 			if number > 0 {
-				pr, ok = git.PRByNumber(root, number)
+				pr, ok, failed = git.PRByNumber(root, number)
 			} else {
-				pr, ok = git.CurrentPR(root)
+				pr, ok, failed = git.CurrentPR(root)
 			}
-			return tabChecksMsg{root: root, pr: pr, ok: ok}
+			return tabChecksMsg{root: root, pr: pr, ok: ok, failed: failed}
 		})
 	}
 	return tea.Batch(cmds...)
 }
 
 func (m *home) applyTabChecks(msg tabChecksMsg) {
+	if msg.failed {
+		return // GitHub didn't answer: keep the chip as it was
+	}
 	var c ui.TabChecks
 	if msg.ok && (msg.pr.State == "" || msg.pr.State == "OPEN") { // a merged PR's old checks say nothing
 		if text, col := tabChecksText(msg.pr); text != "" {
