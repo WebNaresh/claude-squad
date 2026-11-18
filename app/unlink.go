@@ -77,16 +77,45 @@ func startUnlink(project string, n, pr int) tea.Msg {
 	}
 	writeSkipped(project, nums)
 
+	p, err := startRemove(project, n, pr)
+	if err != nil {
+		return fmt.Errorf("#%d skipped, but %v", n, err)
+	}
+	logEvent("unlink: #%d off PR #%d in %s, skipped", n, pr, filepath.Base(project))
+	return p
+}
+
+// startRemove starts `gai issue <n> --remove` in its own tmux session; drive
+// it with pollUnlink.
+func startRemove(project string, n, pr int) (unlinkPollMsg, error) {
 	name := fmt.Sprintf("csunlink_%s_%d", filepath.Base(project), n)
 	if exec.Command("tmux", "has-session", "-t", "="+name).Run() == nil {
-		return fmt.Errorf("#%d is already being taken off its PR; wait for the result", n)
+		return unlinkPollMsg{}, fmt.Errorf("#%d is already being taken off its PR; wait for the result", n)
 	}
 	if out, err := exec.Command("tmux", "new-session", "-d", "-s", name, "-c", project, "-x", "200", "-y", "50",
 		"gai", "issue", fmt.Sprint(n), "--remove").CombinedOutput(); err != nil {
-		return fmt.Errorf("#%d skipped, but gai could not start: %s", n, strings.TrimSpace(string(out)))
+		return unlinkPollMsg{}, fmt.Errorf("gai could not start: %s", strings.TrimSpace(string(out)))
 	}
-	logEvent("unlink: #%d off PR #%d in %s, skipped", n, pr, filepath.Base(project))
-	return unlinkPollMsg{name: name, project: project, issue: n, pr: pr, started: time.Now()}
+	return unlinkPollMsg{name: name, project: project, issue: n, pr: pr, started: time.Now()}, nil
+}
+
+// removeFromPR runs `gai issue <n> --remove` to the end, answering its
+// questions, without the TUI. The caller checks GitHub for the result.
+func removeFromPR(project string, n, pr int) error {
+	p, err := startRemove(project, n, pr)
+	if err != nil {
+		return err
+	}
+	for {
+		switch v := pollUnlink(p)().(type) {
+		case unlinkPollMsg:
+			p = v
+		case unlinkDoneMsg:
+			// v.text is worded for ⌃Space U, which also skips; this doesn't.
+			logEvent("daemon: #%d: gai --remove finished: %s", n, gaiLastWords(p.last))
+			return nil
+		}
+	}
 }
 
 // pollUnlink looks at gai's screen once a second and answers its questions.
