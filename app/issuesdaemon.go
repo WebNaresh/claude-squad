@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -362,7 +363,8 @@ func closeNetworkDeadTile(project string, e *session.ExternalSession) bool {
 		return false
 	}
 	history := session.PaneHistory(e.Name)
-	if !gaiCanRetry(history) || time.Since(deadChecked[e.Name]) < deadCheckEvery {
+	attached := strings.Contains(history, "✓ Attached ")
+	if !gaiDiedOnNetwork(history) || time.Since(deadChecked[e.Name]) < deadCheckEvery || detaching(e.Name) {
 		return false
 	}
 	// Ask GitHub, not the screen: another issue's gai can write this one onto
@@ -370,6 +372,14 @@ func closeNetworkDeadTile(project string, e *session.ExternalSession) bool {
 	// nothing is closed during an outage.
 	deadChecked[e.Name] = time.Now()
 	list, err := listDeadIssues(project)
+	if err == nil && attached && issuePR(list, n) > 0 {
+		// gai attached it, then died before Claude started (#3327: TLS timeout
+		// on the PR body write). The runner skips issues on a PR, so take it
+		// off first; the tile closes once GitHub shows it off, and the issue
+		// starts again. A failed removal is tried again on the next check.
+		detachDeadTile(project, e.Name, n, issuePR(list, n), history)
+		return false
+	}
 	if err != nil || !issueNotOnPR(list, n) {
 		logEvent("daemon: #%d: dead tile kept (on a PR, or GitHub didn't answer: %v)", n, err)
 		return false
@@ -393,14 +403,80 @@ func issueNotOnPR(list []session.Issue, n int) bool {
 	return false
 }
 
-// gaiCanRetry reports whether a dead gai's screen shows a failure that
-// starting the issue again can fix. Not once gai attached the issue: the
-// runner skips issues on a PR, so a closed tile would lose it for good. Not
-// when the failure is local (Ollama on localhost): it needs the user.
-func gaiCanRetry(history string) bool {
-	if strings.Contains(history, "✓ Attached ") {
-		return false
+// issuePR returns the PR open issue n is on, 0 when none or not listed.
+func issuePR(list []session.Issue, n int) int {
+	for _, is := range list {
+		if is.Number == n {
+			return is.PR
+		}
 	}
+	return 0
+}
+
+// removeDeadFromPR takes an issue off its PR; a var so tests don't run gai.
+var removeDeadFromPR = removeFromPR
+
+var (
+	detachMu  sync.Mutex
+	detachSet = map[string]bool{}
+)
+
+// detaching reports whether a dead tile's issue is being taken off its PR.
+func detaching(name string) bool {
+	detachMu.Lock()
+	defer detachMu.Unlock()
+	return detachSet[name]
+}
+
+// detachDeadTile takes a dead tile's attached issue off its PR in the
+// background (gai can take a minute), then closes the tile once GitHub shows
+// it off, so the runner starts it again.
+func detachDeadTile(project, name string, n, pr int, history string) {
+	detachMu.Lock()
+	detachSet[name] = true
+	detachMu.Unlock()
+	logEvent("daemon: #%d: gai died after attaching it to PR #%d, before Claude started (%s); taking it off the PR to start again",
+		n, pr, gaiLastWords(history))
+	go func() {
+		defer func() {
+			detachMu.Lock()
+			delete(detachSet, name)
+			detachMu.Unlock()
+		}()
+		if err := removeDeadFromPR(project, n, pr); err != nil {
+			logEvent("daemon: #%d: could not take it off PR #%d: %v; tried again in %s", n, pr, err, deadCheckEvery)
+			return
+		}
+		list, err := listDeadIssues(project)
+		if err != nil || !issueNotOnPR(list, n) {
+			logEvent("daemon: #%d: still on a PR after removing (or GitHub didn't answer: %v); tried again in %s", n, err, deadCheckEvery)
+			return
+		}
+		// The user may have started the issue again in this tile meanwhile.
+		if !session.PaneDead(name) {
+			logEvent("daemon: #%d: off PR #%d; tile %s is live again, left open", n, pr, name)
+			return
+		}
+		if err := session.KillSession(name); err != nil {
+			logEvent("daemon: could not close dead tile %s: %v", name, err)
+			return
+		}
+		logEvent("daemon: #%d: off PR #%d, dead tile closed, starts again when a slot is free (at most every %s)", n, pr, gaiRetryAfter)
+	}()
+}
+
+// gaiCanRetry reports whether a dead gai's screen shows a failure that
+// closing the tile and starting the issue again can fix as is. Not once gai
+// attached the issue: the runner skips issues on a PR, so it must come off
+// the PR first (detachDeadTile).
+func gaiCanRetry(history string) bool {
+	return !strings.Contains(history, "✓ Attached ") && gaiDiedOnNetwork(history)
+}
+
+// gaiDiedOnNetwork reports whether a dead gai's last words are a GitHub or
+// network error. Not when the failure is local (Ollama on localhost): it
+// needs the user.
+func gaiDiedOnNetwork(history string) bool {
 	words := gaiLastWords(history)
 	low := strings.ToLower(words)
 	for _, local := range []string{"localhost", "127.0.0.1", "ollama"} {
