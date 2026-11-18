@@ -393,6 +393,12 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Fix:** `issueListLimit` is 1000. The merged-PR read (used to tell an issue a merged PR already fixed) goes back 300 PRs instead of 100, so an old issue newly visible doesn't show as free. File: `session/issues.go`.
 - **Guard:** with the project at more than 100 open issues, strip count for the PR = `closingIssuesReferences` total on GitHub (`gh pr view <n> --json closingIssuesReferences`).
 
+### Bottom bar lost the branch's PR during a GitHub blip (2026-11-18)
+- **Saw:** practice-stack on `dev`, PR #3337 open, but the bottom bar showed only `⎇ dev ↓0 ↑0`, no `PR #3337`.
+- **Cause:** `gh pr view` couldn't reach GitHub (`error connecting to api.github.com`, TLS timeouts on and off that morning). `CurrentPR` returned "no PR" for any gh error, and `applyPR` replaced the known PR with it, so every failed 10s refresh hid the chip until a lookup got through. The strip's PR and the tab's checks chip had the same gap.
+- **Fix:** `CurrentPR`/`PRByNumber` also say when gh failed to ask (`failed`; anything but gh's "no pull requests found"), and `applyPR`, `applyStripPR`, `applyTabChecks` keep what they showed on a failed lookup (`session/git/sync.go`, `app/statusbar.go`). A real "no PR" or a branch switch still clears it. Not covered: a cs that starts while GitHub is down has nothing to keep, so the chip appears with the first lookup that works.
+- **Guard:** `TestPRKeptWhenGitHubFails`, `TestNoPR`.
+
 ### PR checks showed only at the bottom, not on the top strip (2026-10-14)
 - **Saw:** the bottom bar had `PR #65 ● 2 of 2 running`; the top strip (`PR #2435 … 81/15 issues`) said nothing about the PR's checks, and the two can be different PRs (checked-out branch vs the batch PR issues gather on).
 - **Fix:** the strip reads the checks of its own PR (`PRByNumber`, every 10s with the Source Control refresh) and draws them after the issues count: `● 2 of 2 running` / `✗ 1 failed` / `✓ 5/5 checks`. Merged PRs and PRs with no checks show nothing. Files: `app/progress.go`, `app/statusbar.go`, `session/git/sync.go`. Test: `TestProgressStripShowsChecks`.
