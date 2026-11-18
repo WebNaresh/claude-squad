@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGaiNetworkErr(t *testing.T) {
@@ -171,5 +172,57 @@ func TestGaiCanRetryUnreachable(t *testing.T) {
 	}
 	if strings.Contains(gaiLastWords(screen), "6)") {
 		t.Fatalf("dead line tail in last words: %q", gaiLastWords(screen))
+	}
+}
+
+// gai attached the issue, then died on GitHub before Claude started (#3327):
+// the issue comes off its PR and the tile closes, so the runner starts it
+// again. Removal that leaves it on the PR keeps the tile for the next check.
+func TestDeadAfterAttachComesOffPR(t *testing.T) {
+	const name = "cc_deadtest_i5"
+	deadTmux(t, name, "✓ Attached #5 to PR #9 — closes: #5\nPost https://api.github.com/graphql: net/http: TLS handshake timeout")
+	e := &session.ExternalSession{Name: name, Kind: session.KindTmux}
+	onPR := true
+	removed := make(chan int, 2)
+	listDeadIssues = func(string) ([]session.Issue, error) {
+		if onPR {
+			return []session.Issue{{Number: 5, PR: 9}}, nil
+		}
+		return []session.Issue{{Number: 5}}, nil
+	}
+	t.Cleanup(func() {
+		listDeadIssues = session.ListOpenIssues
+		removeDeadFromPR = removeFromPR
+		delete(deadChecked, name)
+	})
+	wait := func() {
+		t.Helper()
+		select {
+		case <-removed:
+		case <-time.After(5 * time.Second):
+			t.Fatal("gai --remove not run")
+		}
+		for i := 0; i < 100 && detaching(name); i++ {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+
+	// Removal failed (GitHub still down): tile kept.
+	removeDeadFromPR = func(_ string, n, pr int) error { removed <- n; return nil }
+	if closeNetworkDeadTile("/tmp/deadtest", e) {
+		t.Fatal("closed before the issue came off the PR")
+	}
+	wait()
+	if exec.Command("tmux", "has-session", "-t", "="+name).Run() != nil {
+		t.Fatal("closed while the issue is still on the PR")
+	}
+
+	// Next check: removal works, tile closes.
+	delete(deadChecked, name)
+	removeDeadFromPR = func(_ string, n, pr int) error { onPR = false; removed <- n; return nil }
+	closeNetworkDeadTile("/tmp/deadtest", e)
+	wait()
+	if exec.Command("tmux", "has-session", "-t", "="+name).Run() == nil {
+		t.Fatal("dead tile not closed after the issue came off the PR")
 	}
 }
