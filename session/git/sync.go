@@ -1,6 +1,7 @@
 package git
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -100,33 +101,39 @@ func (p PullRequest) CheckSummary() (pass, fail, pending int) {
 }
 
 // CurrentPR asks GitHub (gh) for the current branch's pull request; ok is
-// false when there is none or gh can't tell.
-func CurrentPR(root string) (PullRequest, bool) {
-	cmd := exec.Command("gh", "pr", "view", "--json", "number,url,state,statusCheckRollup")
-	cmd.Dir = root
-	out, err := cmd.Output()
-	if err != nil {
-		return PullRequest{}, false
-	}
-	var pr PullRequest
-	if json.Unmarshal(out, &pr) != nil || pr.Number == 0 {
-		return PullRequest{}, false
-	}
-	return pr, true
+// false when there is none or gh can't tell. failed is true when gh couldn't
+// tell (GitHub not answering, login): callers keep what they showed before,
+// or a network blip hides the branch's PR (practice-stack PR #3337, 2026-11-18).
+func CurrentPR(root string) (pr PullRequest, ok, failed bool) {
+	return viewPR(root)
 }
 
 // PRByNumber is CurrentPR for a given pull request number (the batch PR the
 // progress strip shows, which need not be the checked-out branch's PR).
-func PRByNumber(root string, number int) (PullRequest, bool) {
-	cmd := exec.Command("gh", "pr", "view", strconv.Itoa(number), "--json", "number,url,state,statusCheckRollup")
+func PRByNumber(root string, number int) (pr PullRequest, ok, failed bool) {
+	return viewPR(root, strconv.Itoa(number))
+}
+
+func viewPR(root string, number ...string) (PullRequest, bool, bool) {
+	args := append(append([]string{"pr", "view"}, number...), "--json", "number,url,state,statusCheckRollup")
+	cmd := exec.Command("gh", args...)
 	cmd.Dir = root
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return PullRequest{}, false
+		return PullRequest{}, false, !noPR(stderr.String())
 	}
 	var pr PullRequest
 	if json.Unmarshal(out, &pr) != nil || pr.Number == 0 {
-		return PullRequest{}, false
+		return PullRequest{}, false, false
 	}
-	return pr, true
+	return pr, true, false
+}
+
+// noPR reports whether gh's error means there is no pull request, as opposed
+// to gh failing to ask.
+func noPR(stderr string) bool {
+	s := strings.ToLower(stderr)
+	return strings.Contains(s, "no pull requests found") || strings.Contains(s, "could not resolve to a pullrequest")
 }
