@@ -487,3 +487,8 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Saw:** terminal failed with `EADDRINUSE :::4444`, but Servers showed nothing, so no way to see who held it.
 - **Cause:** 4444 was GlitchRecord's own copy of practice-stack (`~/GlitchRecord Projects/practise_stack`, started by the GlitchRecord Electron app). Servers lists only the active project's tiles and folder, so another folder's server was hidden.
 - **Fix:** each listing also reads the dock terminal's last 200 lines for "address already in use …N"; a server on N shows in Servers whatever its folder, labelled `blocks this port · <folder>`, with its stop (`dockBlockedPorts`, `blockedPorts`, `app/servers.go`). Guard: `TestBlockedPorts`.
+
+### No visible way to stop the auto pickup (practice-stack, 2026-11-20)
+- **Saw:** the user wanted to finish 2 open issue sessions and do a git cleanup, but closing a session freed a slot and the runner started the next issue. They asked for a stop button ("not pause").
+- **Cause:** auto off already existed, but only as `a` inside the issue picker; the strip just said `⟳ auto`, with nothing to click.
+- **Fix:** the strip ends with a red `■ stop` button (green `▶ start` when stopped, strip says "auto stopped: no new issues start"). Click toggles the same `.auto-off` file the picker and the background runner read; open sessions keep running (`clickAutoButton`, `app/autoissues.go`; `autoBtnSpan`, `app/progress.go`). Same day: also ⌃Space G in command mode, labelled "stop auto" / "start auto" (`commandKeysNow`, `app/leader.go`). Default stays on; only the user stops it. Guards: `TestStripStopButton`, `TestLeaderGStopsAuto`.
