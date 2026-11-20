@@ -264,3 +264,33 @@ func (m *home) autoPickerClosed(project string, started bool) {
 // daemonRunning reports whether the background issue runner is up
 // (issuesdaemon.go); the window then leaves starting issues to it.
 var daemonRunning = func() bool { return config.LockHolder(config.IssuesDaemonLock) != 0 }
+
+const (
+	autoStopLabel  = " ■ stop "
+	autoStartLabel = " ▶ start "
+)
+
+// clickAutoButton stops or starts the auto pickup for the project on screen
+// (the strip's button). Stopping leaves open sessions running; it only keeps
+// new issues from starting, here and in the background runner.
+func (m *home) clickAutoButton() tea.Cmd {
+	project := m.projectTabs.Active()
+	if project == "" {
+		return nil
+	}
+	m.toggleAuto(project)
+	m.gridRenderKey = "" // redraw the strip now
+	if m.autoOn(project) {
+		return m.handleError(fmt.Errorf("auto pickup started for %s: new issues start when a slot frees", filepath.Base(project)))
+	}
+	return m.handleError(fmt.Errorf("auto pickup stopped for %s: open sessions keep running, no new issue starts (▶ start to resume)", filepath.Base(project)))
+}
+
+// autoKeyLabel is ⌃Space G's label: what pressing it does for the project
+// on screen.
+func (m *home) autoKeyLabel() string {
+	if p := m.projectTabs.Active(); p != "" && !m.autoOn(p) {
+		return "start auto"
+	}
+	return "stop auto"
+}
