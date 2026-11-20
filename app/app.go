@@ -204,6 +204,9 @@ type home struct {
 	// gridRenderKey/gridRendered cache the drawn grid
 	gridRenderKey string
 	gridRendered  string
+	// autoBtnSpan is where the strip's "■ stop" / "▶ start" button sits
+	// (screen columns, end exclusive; empty when cut off)
+	autoBtnSpan [2]int
 	// gridKeys names the sessions gridTiles shows, in order; a different
 	// list (another tab) is redrawn from tileCache at once
 	gridKeys string
@@ -851,6 +854,10 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if cmd, ok := m.clickBottomRow(msg.X); ok {
 				return m, cmd
 			}
+		}
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft && msg.Y == 1 && m.state == stateDefault &&
+			msg.X >= m.autoBtnSpan[0] && msg.X < m.autoBtnSpan[1] {
+			return m, m.clickAutoButton()
 		}
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft && msg.Y == 0 && m.state == stateDefault {
 			switch hit := m.projectTabs.HitTest(msg.X); {
@@ -2129,6 +2136,7 @@ func (m *home) View() string {
 		return m.lastView
 	}
 	m.skipRender = false
+	m.autoBtnSpan = [2]int{} // set again when the strip is drawn
 	started := time.Now()
 	done := watchBegin("View")
 	defer func() {
