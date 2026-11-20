@@ -33,6 +33,9 @@ var (
 	progGood    = lipgloss.NewStyle().Foreground(lipgloss.Color("#3fb950")).Bold(true)
 	progFire    = lipgloss.NewStyle().Foreground(lipgloss.Color("#f0883e")).Bold(true)
 	progDimNote = lipgloss.NewStyle().Foreground(lipgloss.Color("#6e6e6e"))
+	// The auto pickup's stop/start button (clickable, see clickAutoButton).
+	progStopBtn  = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Background(lipgloss.Color("#b62324")).Bold(true)
+	progStartBtn = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Background(lipgloss.Color("#238636")).Bold(true)
 )
 
 func progressFile() string {
@@ -203,13 +206,28 @@ func (m *home) renderProgress(width int) string {
 	if st := m.progress.streak(); st > 0 {
 		parts = append(parts, progFire.Render(fmt.Sprintf("🔥 %d-day streak", st)))
 	}
-	switch {
-	case !m.autoOn(project):
-		parts = append(parts, progDimNote.Render("auto off"))
-	case daemonRunning():
-		parts = append(parts, progGood.Render("⟳ auto"))
+	// The auto pickup's state plus a button to stop or start it: stopping it
+	// is how to keep working on the sessions already open (and clean up git)
+	// without new issues starting when a slot frees.
+	var btn string
+	if m.autoOn(project) {
+		if daemonRunning() {
+			parts = append(parts, progGood.Render("⟳ auto"))
+		} else {
+			parts = append(parts, progLabel.Render("auto on"))
+		}
+		btn = progStopBtn.Render(autoStopLabel)
+	} else {
+		parts = append(parts, progDimNote.Render("auto stopped: no new issues start"))
+		btn = progStartBtn.Render(autoStartLabel)
 	}
-	line := " " + strings.Join(parts, sep)
+	line := " " + strings.Join(parts, sep) + " "
+	m.autoBtnSpan = [2]int{}
+	if at := ansi.StringWidth(line); at+ansi.StringWidth(btn) <= width {
+		x0 := m.screenWidth - m.paneWidth // the strip's first column, as in hitGrid
+		m.autoBtnSpan = [2]int{x0 + at, x0 + at + ansi.StringWidth(btn)}
+	}
+	line += btn
 
 	// All projects: finished today and how full their PRs are.
 	if len(m.projectTabs.Projects()) > 1 {
