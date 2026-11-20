@@ -137,6 +137,11 @@ func ListServers() ([]Server, error) {
 		if sv.ByClaude && strings.Contains(strings.ToLower(sv.Command), "mcp") {
 			continue
 		}
+		// Nor is the port the claude CLI itself listens on (127.0.0.1,
+		// random port); its "stop" would Ctrl+C the Claude tile.
+		if isClaudeCLI(comm[sv.PID]) {
+			continue
+		}
 		kept = append(kept, sv)
 	}
 	servers = kept
@@ -160,6 +165,11 @@ func processTable() (ppid map[int]int, comm map[int]string) {
 		}
 	}
 	return
+}
+
+// isClaudeCLI reports the claude CLI process itself (ps comm is its path).
+func isClaudeCLI(comm string) bool {
+	return filepath.Base(comm) == "claude"
 }
 
 // interactive reports a process a user types in or a terminal app, which a
