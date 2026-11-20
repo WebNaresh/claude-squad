@@ -477,3 +477,13 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Cause:** `autoCheck` skipped a project with no free session before loading its list. The window's `issueCache` starts empty on each restart, and cs restarts on every build, so a project at its limit (6/6, 8/6) never filled it. The daemon's file on disk was correct; the strip doesn't read it. abhyaiska had free sessions, so it loaded.
 - **Fix:** the list loads first, the no-free-session check comes after (`app/autoissues.go`). Guard: `TestAutoFullProjectStillLoadsItsList`.
 - **Next time:** strip starting at "▶" means `s.known` is false: the window has no list for that project. Its left edge is the tile's, so nothing is hidden.
+
+### Servers panel listed Claude tiles as servers (2026-11-19)
+- **Saw:** Servers showed `:49767 gst-gst-notices-download-#3308 · claude --res…` and four more random high ports, each with a `stop`. Looked like GitHub Actions runners.
+- **Cause:** the claude CLI itself listens on a 127.0.0.1 random port (lsof names it `2.1.328`, its versioned binary). `ListServers` only skipped Claude's MCP children, not Claude. Its `stop` would have sent Ctrl+C to the tile and interrupted Claude.
+- **Fix:** a listener whose own process is `claude` is dropped (`isClaudeCLI`, `session/servers.go`). Guard: `TestIsClaudeCLI`.
+
+### Dev server "address already in use :::4444", Servers panel empty (practice-stack, 2026-11-19)
+- **Saw:** terminal failed with `EADDRINUSE :::4444`, but Servers showed nothing, so no way to see who held it.
+- **Cause:** 4444 was GlitchRecord's own copy of practice-stack (`~/GlitchRecord Projects/practise_stack`, started by the GlitchRecord Electron app). Servers lists only the active project's tiles and folder, so another folder's server was hidden.
+- **Fix:** each listing also reads the dock terminal's last 200 lines for "address already in use …N"; a server on N shows in Servers whatever its folder, labelled `blocks this port · <folder>`, with its stop (`dockBlockedPorts`, `blockedPorts`, `app/servers.go`). Guard: `TestBlockedPorts`.
