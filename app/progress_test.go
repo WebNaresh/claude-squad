@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
@@ -99,5 +100,62 @@ func TestTabChecksChip(t *testing.T) {
 	m.applyTabChecks(tabChecksMsg{root: project, ok: false}) // gh failed: chip gone
 	if row := ansi.Strip(m.projectTabs.String()); strings.Contains(row, "✓") {
 		t.Errorf("chip kept after a failed read: %q", row)
+	}
+}
+
+// The strip carries a stop/start button for the auto pickup: a click on it
+// stops new issues starting (the user keeps working on open sessions and
+// cleans up git), a second click starts it again.
+func TestStripStopButton(t *testing.T) {
+	m, project := autoHome(t, 2, 3, 5)
+	m.progress = loadProgress()
+	m.screenWidth, m.paneWidth = 200, 160
+	click := func() {
+		t.Helper()
+		plain := ansi.Strip(m.renderProgress(160))
+		if m.autoBtnSpan[1] <= m.autoBtnSpan[0] {
+			t.Fatalf("no button span in %q", plain)
+		}
+		x := m.autoBtnSpan[0] + 1
+		m.Update(tea.MouseMsg{X: x, Y: 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	}
+	plain := ansi.Strip(m.renderProgress(160))
+	if !strings.Contains(plain, "■ stop") || !m.autoOn(project) {
+		t.Fatalf("auto on: strip %q should offer ■ stop", plain)
+	}
+	// The span points at the button's screen columns.
+	if got := ansi.Cut(m.renderProgress(160), m.autoBtnSpan[0]-40, m.autoBtnSpan[1]-40); !strings.Contains(ansi.Strip(got), "stop") {
+		t.Errorf("span %v covers %q, not the button", m.autoBtnSpan, ansi.Strip(got))
+	}
+	click()
+	if m.autoOn(project) {
+		t.Fatal("click on ■ stop left auto on")
+	}
+	if plain = ansi.Strip(m.renderProgress(160)); !strings.Contains(plain, "auto stopped") || !strings.Contains(plain, "▶ start") {
+		t.Errorf("stopped: strip %q", plain)
+	}
+	click()
+	if !m.autoOn(project) {
+		t.Fatal("click on ▶ start left auto stopped")
+	}
+}
+
+// ⌃Space G does what the strip's button does, and the command menu says
+// which way it goes.
+func TestLeaderGStopsAuto(t *testing.T) {
+	m, project := autoHome(t, 1, 1, 1)
+	if !strings.Contains(ansi.Strip(m.leaderMenu()), "stop auto") {
+		t.Fatalf("menu lacks stop auto: %q", ansi.Strip(m.leaderMenu()))
+	}
+	m.handleLeader(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
+	if m.autoOn(project) {
+		t.Fatal("⌃Space G left auto on")
+	}
+	if !strings.Contains(ansi.Strip(m.leaderMenu()), "start auto") {
+		t.Errorf("stopped: menu lacks start auto: %q", ansi.Strip(m.leaderMenu()))
+	}
+	m.handleLeader(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
+	if !m.autoOn(project) {
+		t.Fatal("second ⌃Space G left auto stopped")
 	}
 }
