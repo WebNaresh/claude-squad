@@ -246,8 +246,10 @@ type home struct {
 	dockHidden bool
 	dockShots  map[string]dockCapturedMsg
 	// servers are the listening ports, with the tile that started each (servers.go)
-	servers        []session.Server
-	serversFocused bool
+	servers            []session.Server
+	serversBlocked     []int  // ports the dock terminal found in use (servers.go)
+	serversBlockedDock string // the dock serversBlocked was read from
+	serversFocused     bool
 	// Auto issue loop (autoissues.go): autoDeclined is how many sessions ran
 	// when its offer was declined, autoFetched when the issue list was last
 	// loaded for it, autoSaid the last message shown, autoPrompt the project
@@ -494,7 +496,7 @@ func (m *home) Init() tea.Cmd {
 		scTick(),
 		keyboardCheck(),
 		usageTick(),
-		refreshServers(),
+		refreshServers(""),
 		serversTick(serversEvery),
 		autoTick(),
 	)
@@ -673,7 +675,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, serversTick(serversEvery)
 		}
 		m.serversLoading = true
-		return m, tea.Batch(refreshServers(), serversTick(serversEvery))
+		return m, tea.Batch(refreshServers(m.dockName()), serversTick(serversEvery))
 	case serversMsg:
 		m.serversLoading = false
 		return m, m.applyServers(msg)
