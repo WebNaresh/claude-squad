@@ -3,7 +3,11 @@ package app
 import (
 	"claude-squad/session"
 	"fmt"
+	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,7 +38,9 @@ type serversTickMsg struct{}
 
 type serversMsg struct {
 	servers []session.Server
-	err     error // the listing timed out: keep the last list
+	blocked []int  // ports the dock terminal said were already in use
+	dock    string // the dock terminal blocked was read from
+	err     error  // the listing timed out: keep the last list
 }
 
 func serversTick(d time.Duration) tea.Cmd {
@@ -44,12 +50,41 @@ func serversTick(d time.Duration) tea.Cmd {
 	}
 }
 
-// refreshServers lists the listening ports off the UI thread.
-func refreshServers() tea.Cmd {
+// refreshServers lists the listening ports off the UI thread, and the ports
+// the dock terminal (tmux session dock, "" for none) failed to bind.
+func refreshServers(dock string) tea.Cmd {
 	return func() tea.Msg {
 		list, err := session.ListServers()
-		return serversMsg{servers: list, err: err}
+		return serversMsg{servers: list, blocked: dockBlockedPorts(dock), dock: dock, err: err}
 	}
+}
+
+// addrInUse matches Node's and most servers' "address already in use :::4444"
+// / "0.0.0.0:3000" / "port 3000".
+var addrInUse = regexp.MustCompile(`(?i)address already in use[^0-9\n]*(?:[0-9.]*:)?(\d{2,5})`)
+
+// dockBlockedPorts reads the dock terminal's recent lines for "address
+// already in use" and returns those ports.
+func dockBlockedPorts(dock string) []int {
+	if dock == "" {
+		return nil
+	}
+	out, err := session.ProcOutput("tmux", "capture-pane", "-p", "-J", "-S", "-200", "-t", "="+dock+":")
+	if err != nil {
+		return nil
+	}
+	return blockedPorts(string(out))
+}
+
+// blockedPorts returns each port text says was already in use, once.
+func blockedPorts(text string) []int {
+	var ports []int
+	for _, m := range addrInUse.FindAllStringSubmatch(text, -1) {
+		if n, _ := strconv.Atoi(m[1]); n > 0 && !slices.Contains(ports, n) {
+			ports = append(ports, n)
+		}
+	}
+	return ports
 }
 
 // applyServers stores the list and resizes the left column if the number of
@@ -61,7 +96,7 @@ func (m *home) applyServers(msg serversMsg) tea.Cmd {
 		return nil
 	}
 	before := m.serversHeight()
-	m.servers = msg.servers
+	m.servers, m.serversBlocked, m.serversBlockedDock = msg.servers, msg.blocked, msg.dock
 	if m.serversHeight() != before {
 		m.layoutLeft()
 	}
@@ -73,7 +108,9 @@ func (m *home) applyServers(msg serversMsg) tea.Cmd {
 }
 
 // projectServers are the servers of the active project: started in one of
-// its tiles, or running in its folder.
+// its tiles, or running in its folder. A server of another folder shows too
+// when it holds a port the dock terminal failed to bind ("address already in
+// use"), so the clash has an answer and a stop.
 func (m *home) projectServers() []session.Server {
 	project := m.projectTabs.Active()
 	if project == "" {
@@ -81,7 +118,8 @@ func (m *home) projectServers() []session.Server {
 	}
 	var out []session.Server
 	for _, s := range m.servers {
-		if m.tileProject(s.Tmux) == project || s.Cwd == project || strings.HasPrefix(s.Cwd, project+string(filepath.Separator)) {
+		if m.tileProject(s.Tmux) == project || s.Cwd == project || strings.HasPrefix(s.Cwd, project+string(filepath.Separator)) ||
+			m.blocksDock(s.Port) {
 			out = append(out, s)
 		}
 	}
@@ -113,6 +151,8 @@ func (m *home) tileProject(name string) string {
 func (m *home) serverOwner(s session.Server) string {
 	who := ""
 	switch {
+	case m.blocksDock(s.Port) && m.tileProject(s.Tmux) != m.projectTabs.Active():
+		return "blocks this port · " + homeShort(s.Cwd)
 	case s.Tmux == "":
 		return "no tile, left running"
 	case s.Tmux == m.dockName():
@@ -134,6 +174,20 @@ func (m *home) serverOwner(s session.Server) string {
 		return "Claude in " + who
 	}
 	return who
+}
+
+// blocksDock reports a port the active project's dock terminal failed to
+// bind. Read from another project's dock (tab just switched): none.
+func (m *home) blocksDock(port int) bool {
+	return m.serversBlockedDock != "" && m.serversBlockedDock == m.dockName() && slices.Contains(m.serversBlocked, port)
+}
+
+// homeShort writes a folder with ~ for the home folder.
+func homeShort(dir string) string {
+	if h, err := os.UserHomeDir(); err == nil && h != "" && strings.HasPrefix(dir, h) {
+		return "~" + dir[len(h):]
+	}
+	return dir
 }
 
 // serversHeight is the rows the list takes: a heading and one per server.
@@ -194,7 +248,7 @@ func (m *home) handleServersMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
 
 // stopServer stops s and refreshes the list shortly after.
 func (m *home) stopServer(s session.Server) tea.Cmd {
-	owner := m.serverOwner(s)
+	owner, dock := m.serverOwner(s), m.dockName()
 	logEvent("server stop: :%d pid=%d root=%d tmux=%s byClaude=%v", s.Port, s.PID, s.Root, s.Tmux, s.ByClaude)
 	return tea.Batch(func() tea.Msg {
 		if err := session.StopServer(s); err != nil {
@@ -203,8 +257,7 @@ func (m *home) stopServer(s session.Server) tea.Cmd {
 		return fmt.Errorf("stopping :%d (%s)", s.Port, owner)
 	}, func() tea.Msg {
 		time.Sleep(time.Second)
-		list, err := session.ListServers()
-		return serversMsg{servers: list, err: err}
+		return refreshServers(dock)()
 	})
 }
 
