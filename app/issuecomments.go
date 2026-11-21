@@ -261,8 +261,7 @@ func deliverIssueComments(sessions []*session.ExternalSession, s *commentState, 
 func commentsSince(dir string, t time.Time) ([]ghComment, error) {
 	since := t.Add(-time.Minute).UTC().Format(time.RFC3339)
 	// Every page: after a night off, release notes alone fill one.
-	cmd := exec.Command("gh", "api", "--paginate", "--slurp", "repos/{owner}/{repo}/issues/comments?per_page=100&since="+since)
-	cmd.Dir = dir
+	cmd := session.GhCmd(dir, "api", "--paginate", "--slurp", "repos/{owner}/{repo}/issues/comments?per_page=100&since="+since)
 	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
