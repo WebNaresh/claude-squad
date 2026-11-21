@@ -117,6 +117,11 @@ func PRByNumber(root string, number int) (pr PullRequest, ok, failed bool) {
 func viewPR(root string, number ...string) (PullRequest, bool, bool) {
 	args := append(append([]string{"pr", "view"}, number...), "--json", "number,url,state,statusCheckRollup")
 	cmd := exec.Command("gh", args...)
+	if len(number) > 0 {
+		// A number alone means the origin repo's PR, not upstream's. Without
+		// one gh needs the local branch, which GH_REPO would switch off.
+		cmd = GhCmd(root, args...)
+	}
 	cmd.Dir = root
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
