@@ -318,6 +318,13 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 
 ## Background runner
 
+### Auto pickup started the upstream project's issues in a fork
+- **Saw (2026-11-21):** with auto pickup on for claude-squad, cs started #56 "Enable multiple git repos" and #156 "update git stats outside main goroutine": smtg-ai's issues, not the user's.
+- **Cause:** gh calls ran without a repo. With `origin` and `upstream` remotes gh picks `upstream` first, and the fork has issues turned off, so the list was upstream's.
+- **Fix:** every issue/PR gh call (and `gh pr view <n>` for the batch PR) runs through `git.GhCmd`, which sets `GH_REPO` to origin's owner/repo. "has disabled issues" now means no issues, never a fallback.
+- **Guard:** `TestOriginRepoRe` (`session/git/gh_test.go`) for the remote parsing. Live check: `GH_REPO=WebNaresh/claude-squad gh issue list` says "disabled issues"; the claude-squad tab shows no issues.
+- **Files:** `session/git/gh.go`, `session/git/sync.go`, `session/issues.go`, `app/issuecomments.go`, `app/batchbase.go`.
+
 ### Switching Claude subscription (/login) left every tile stopped
 - **Saw (2026-10-05):** after `/login` to another subscription, every tile showed "Remote Control disconnected — signed-in claude.ai account or organization changed" and `/rc failed`. Tiles stopped on the old account's usage limit stayed stopped until its reset time. The user had to type `/remote-control` and `continue` in each tile by hand.
 - **Cause:** the runner only resumed a limit after its reset time, and nothing turned Remote Control back on.
