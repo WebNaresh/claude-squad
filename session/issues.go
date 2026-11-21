@@ -13,6 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"claude-squad/session/git"
 )
 
 // Issue is an open GitHub issue of a project.
@@ -133,11 +135,13 @@ func ListOpenIssues(dir string) ([]Issue, error) {
 		pr, unclear := ChoosePR(list, ghLogin(dir), checkedOutBranch(dir))
 		gather <- prChoice{pr, unclear}
 	}()
-	cmd := exec.Command("gh", "issue", "list", "--state", "open", "--limit", issueListLimit,
+	cmd := GhCmd(dir, "issue", "list", "--state", "open", "--limit", issueListLimit,
 		"--json", "number,title,url,body,createdAt,labels")
-	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && strings.Contains(string(ee.Stderr), "has disabled issues") {
+			return nil, nil // origin has no issues (a fork): never fall back to upstream's
+		}
 		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
 			return nil, fmt.Errorf("gh issue list: %s", strings.TrimSpace(string(ee.Stderr)))
 		}
@@ -249,6 +253,9 @@ func otherRepoOpen(dir, repo string, n int) bool {
 
 var githubRemoteRe = regexp.MustCompile(`github\.com[:/]([^/]+)/`)
 
+// GhCmd is gh run in dir against the origin repo (see git.GhCmd).
+func GhCmd(dir string, args ...string) *exec.Cmd { return git.GhCmd(dir, args...) }
+
 // githubOwner is the owner of dir's origin remote on GitHub, or "".
 func githubOwner(dir string) string {
 	out, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").Output()
@@ -317,9 +324,8 @@ type prRef struct {
 // no new label, and cs kept it as taken). Failed before the latest merge
 // (a re-fix merged since) → stays taken until testing says again.
 func qaFailedAfter(dir string, number int, mergedAt time.Time) bool {
-	cmd := exec.Command("gh", "api", fmt.Sprintf("repos/{owner}/{repo}/issues/%d/events?per_page=100", number),
+	cmd := GhCmd(dir, "api", fmt.Sprintf("repos/{owner}/{repo}/issues/%d/events?per_page=100", number),
 		"--jq", `[.[] | select(.event=="reopened" or (.event=="labeled" and .label.name=="`+qaFailedLabel+`")) | .created_at] | last // ""`)
-	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
 		return false
@@ -507,9 +513,8 @@ func (e mergedEntry) list() []PRInfo {
 
 // listPRs reads up to limit PRs in state (open or merged).
 func listPRs(dir, state, limit string) ([]PRInfo, error) {
-	cmd := exec.Command("gh", "pr", "list", "--state", state, "--limit", limit,
+	cmd := GhCmd(dir, "pr", "list", "--state", state, "--limit", limit,
 		"--json", "number,closingIssuesReferences,author,mergedAt,headRefName")
-	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -600,8 +605,7 @@ func QueueIssueSession(dir string, issue Issue) (string, error) {
 // still look open with no PR (practice-stack, 2026-11-14: 8 issues #3244 had
 // just closed were started again and piled onto a new PR #3254).
 func IssueClosed(dir string, n int) (bool, error) {
-	cmd := exec.Command("gh", "issue", "view", strconv.Itoa(n), "--json", "state", "--jq", ".state")
-	cmd.Dir = dir
+	cmd := GhCmd(dir, "issue", "view", strconv.Itoa(n), "--json", "state", "--jq", ".state")
 	out, err := cmd.Output()
 	if err != nil {
 		return false, err
