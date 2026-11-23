@@ -365,6 +365,7 @@ func resumeAfterLimit(sessions []*session.ExternalSession, done map[string]bool,
 			time.Sleep(1500 * time.Millisecond) // let each local command finish first
 			_ = session.PressKeys(e.Live, "/reload-plugins")
 			logEvent("daemon: %s: claude.ai account changed, typed /remote-control and /reload-plugins", e.Name)
+			chromeFollowsAccount("account changed outside cs")
 			if ok && limitIsLast(screen) {
 				time.Sleep(1500 * time.Millisecond)
 				_ = session.PressKeys(e.Live, "continue")
@@ -487,9 +488,7 @@ func switchedOnLimit(at, now time.Time, done map[string]bool) bool {
 		return false
 	}
 	logEvent("daemon: usage limit until %s, switched to account %s", at.Format("15:04"), next.Name)
-	// Up to ~16s of clicking in Chrome: not inside the runner's scan, which
-	// would hold every tile's continue back meanwhile.
-	go func(email string) { logEvent("daemon: chrome extension: %s", chromeReset(email)) }(next.Email)
+	chromeFollowsAccount("switched account")
 	done[gk+"|ok"] = true
 	return true
 }
@@ -501,4 +500,47 @@ func noteLimitSeen(at time.Time) {
 	if _, ok := limitOwner[gk]; !ok {
 		limitOwner[gk] = session.CurrentAccountUUID()
 	}
+}
+
+// chromeFollowsAccount moves the Chrome extension to the account Claude is
+// signed in as, once per account, whoever changed it (cs, or a manual /login:
+// tiles then showed "Remote Control disconnected" while the extension stayed on
+// the old account, so Claude in Chrome was "not connected"). Up to ~16s of
+// clicking: in the background, not inside the runner's scan.
+func chromeFollowsAccount(why string) {
+	email, ok := session.ChromeNeedsReset()
+	if !ok {
+		return
+	}
+	go func() {
+		res := chromeReset(email)
+		logEvent("daemon: chrome extension (%s): %s", why, res)
+		ReloadTilesAfterChrome(res)
+	}()
+}
+
+// ReloadTilesAfterChrome types /reload-plugins into every idle tile once the
+// extension has signed in: the tiles reloaded at the account change, before the
+// extension finished signing in, so their Claude in Chrome connection stayed
+// "not connected" (#3314, 2026-11-23). Only after a successful sign-in; busy
+// tiles and tiles with text in the prompt are left alone.
+func ReloadTilesAfterChrome(result string) int {
+	if !strings.Contains(result, "signed in as") {
+		return 0
+	}
+	list, _, err := session.ListExternalSessions()
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, e := range list {
+		if e.Kind != session.KindTmux || e.Status == "busy" || e.Status == "waiting" || e.Live == "" || !promptEmpty(e.Live) {
+			continue
+		}
+		_ = session.PressKeys(e.Live, "/reload-plugins")
+		logEvent("daemon: %s: extension signed in, typed /reload-plugins", e.Name)
+		n++
+		time.Sleep(1500 * time.Millisecond)
+	}
+	return n
 }
