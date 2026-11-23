@@ -443,8 +443,11 @@ func continueRest(typed string) (string, bool) {
 	return "", false
 }
 
-// useAccount is swapped in tests.
-var useAccount = session.UseAccount
+// useAccount and chromeReset are swapped in tests.
+var (
+	useAccount  = session.UseAccount
+	chromeReset = session.ResetChromeExtension
+)
 
 // limitOwner: which account was signed in the first time a limit notice (by
 // reset time) was seen. A notice still on a tile's screen after a switch or
@@ -484,6 +487,9 @@ func switchedOnLimit(at, now time.Time, done map[string]bool) bool {
 		return false
 	}
 	logEvent("daemon: usage limit until %s, switched to account %s", at.Format("15:04"), next.Name)
+	// Up to ~16s of clicking in Chrome: not inside the runner's scan, which
+	// would hold every tile's continue back meanwhile.
+	go func(email string) { logEvent("daemon: chrome extension: %s", chromeReset(email)) }(next.Email)
 	done[gk+"|ok"] = true
 	return true
 }
