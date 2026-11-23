@@ -22,6 +22,7 @@ func TestResumeAfterLimitTiming(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("CLAUDE_SQUAD_HOME", home+"/cs")
 	limitOwner = map[string]string{}
+	chromeReset = func(string) string { return "" }
 	useAccount = func(string) error { return nil }
 	defer func() { useAccount = session.UseAccount }()
 	if _, err := exec.LookPath("tmux"); err != nil {
