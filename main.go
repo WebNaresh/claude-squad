@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -119,6 +120,65 @@ var (
 		},
 	}
 
+	accountCmd = &cobra.Command{
+		Use:   "account",
+		Short: "Save Claude logins and switch between them (add|list|use|remove)",
+		Long: "add <name>: save the login Claude is signed in to now.\n" +
+			"list: saved logins and which is active.\n" +
+			"remove <name>: forget a saved login (the active one is unchanged).\n" +
+			"use <name>: switch to a saved login. When a limit is hit cs does this by itself.",
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			switch args[0] {
+			case "add":
+				if len(args) != 2 {
+					return fmt.Errorf("usage: account add <name>")
+				}
+				acc, err := session.SaveAccount(args[1])
+				if err != nil {
+					return err
+				}
+				fmt.Printf("saved %s (%s)\n", acc.Name, acc.Email)
+			case "list":
+				all, err := session.ListAccounts()
+				if err != nil {
+					return err
+				}
+				cur := session.CurrentAccountUUID()
+				for _, a := range all {
+					mark := " "
+					if a.AccountUUID == cur {
+						mark = "*"
+					}
+					lim := ""
+					if a.LimitedUntil.After(time.Now()) {
+						lim = "  limited until " + a.LimitedUntil.Format("15:04")
+					}
+					fmt.Printf("%s %s  %s%s\n", mark, a.Name, a.Email, lim)
+				}
+			case "remove", "rm":
+				if len(args) != 2 {
+					return fmt.Errorf("usage: account remove <name>")
+				}
+				if err := session.RemoveAccount(args[1]); err != nil {
+					return err
+				}
+				fmt.Println("removed", args[1], "(the active login is unchanged)")
+			case "use":
+				if len(args) != 2 {
+					return fmt.Errorf("usage: account use <name>")
+				}
+				if err := session.UseAccount(args[1]); err != nil {
+					return err
+				}
+				fmt.Println("switched to", args[1])
+			default:
+				return fmt.Errorf("unknown: %s (add|list|use|remove)", args[0])
+			}
+			return nil
+		},
+	}
+
 	resetCmd = &cobra.Command{
 		Use:   "reset",
 		Short: "Reset all stored instances",
@@ -206,6 +266,7 @@ func init() {
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(resetCmd)
+	rootCmd.AddCommand(accountCmd)
 }
 
 func main() {
