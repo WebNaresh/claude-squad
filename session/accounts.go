@@ -256,6 +256,19 @@ func CurrentAccountUUID() string {
 	return oa.UUID
 }
 
+// CurrentAccountEmail is the address Claude is signed in as now.
+func CurrentAccountEmail() string {
+	cj, err := readClaudeJSON()
+	if err != nil {
+		return ""
+	}
+	var oa struct {
+		Email string `json:"emailAddress"`
+	}
+	_ = json.Unmarshal(cj["oauthAccount"], &oa)
+	return oa.Email
+}
+
 // UseAccount makes name the signed-in login. The old keychain item is kept as
 // <config>/accounts/keychain-backup.json (0600) first. A login that was
 // refreshed since it was saved is saved again before leaving it, so no
