@@ -1,9 +1,12 @@
 package session
 
 import (
+	"claude-squad/config"
 	"fmt"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -186,4 +189,38 @@ func whyNotClicked(out string, err error) string {
 func loggedInAs(text, email string) bool {
 	re := regexp.MustCompile(`(?i)logged in as ` + regexp.QuoteMeta(email) + `(\s|$)`)
 	return email != "" && re.MatchString(text)
+}
+
+func chromeMarkerPath() string {
+	dir, err := config.GetConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "chrome-account")
+}
+
+// MarkChromeAccount records that the extension step ran for the account
+// signed in now (or uuid), so a later account-changed notice doesn't repeat it.
+func MarkChromeAccount(uuid string) {
+	if p := chromeMarkerPath(); p != "" && uuid != "" {
+		_ = os.MkdirAll(filepath.Dir(p), 0o700)
+		_ = os.WriteFile(p, []byte(uuid+"\n"), 0o600)
+	}
+}
+
+// ChromeNeedsReset says whether the extension step has not run yet for the
+// account Claude is signed in as, and if so which address to sign in as. It
+// marks the account as done: the caller runs the step right after. This is
+// how a manual /login (cs never saw it) still gets the extension moved.
+func ChromeNeedsReset() (email string, ok bool) {
+	uuid, email := CurrentAccountUUID(), CurrentAccountEmail()
+	p := chromeMarkerPath()
+	if uuid == "" || email == "" || p == "" {
+		return "", false
+	}
+	if b, err := os.ReadFile(p); err == nil && strings.TrimSpace(string(b)) == uuid {
+		return "", false
+	}
+	MarkChromeAccount(uuid)
+	return email, true
 }
