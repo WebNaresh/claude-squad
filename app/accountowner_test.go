@@ -21,6 +21,7 @@ func TestStaleNoticeMarksItsOwnAccount(t *testing.T) {
 	t.Setenv("HOME", home)
 	limitOwner = map[string]string{}
 	var used []string
+	chromeReset = func(string) string { return "" }
 	useAccount = func(n string) error { used = append(used, n); return nil }
 	defer func() { useAccount = session.UseAccount }()
 
