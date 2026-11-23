@@ -137,6 +137,13 @@ func resumeWrapUp(e *session.ExternalSession, screen string, done map[string]boo
 	if finished || (e.Status == "busy" && !strings.Contains(footerBelowBox(screen), " shell")) {
 		return true
 	}
+	// The footer limit is today's usual one, so it switches accounts too.
+	// switchedOnLimit acts once per limit; after the switch the tile prints
+	// its account-changed notice and the rule below continues it right away.
+	noteLimitSeen(at)
+	if now.Before(at.Add(limitMargin)) {
+		switchedOnLimit(at, now, done)
+	}
 	key := e.Name + "|wrapup|" + at.Format(time.RFC3339)
 	if done[key] {
 		return true
@@ -377,11 +384,24 @@ func resumeAfterLimit(sessions []*session.ExternalSession, done map[string]bool,
 		if !ok || !limitIsLast(screen) {
 			continue
 		}
+		noteLimitSeen(at)
+		key := e.Name + "|" + at.Format(time.RFC3339) // once per limit, tomorrow's too
 		if now.Before(at.Add(limitMargin)) {
+			// Limit still on: another saved account may have room. Switch
+			// once per limit, then carry on in this tile right away. If the
+			// running Claude didn't pick the new login up, the limit line is
+			// last again and the reset path below still applies.
+			if switchedOnLimit(at, now, done) && !done[key+"|acct"] {
+				typed, has := promptText(e.Live)
+				if rest, isContinue := continueRest(typed); has && isContinue {
+					done[key+"|acct"] = true
+					_ = session.PressKeys(e.Live, rest)
+					logEvent("daemon: %s: switched account, typed continue", e.Name)
+				}
+			}
 			due(at.Add(limitMargin))
 			continue
 		}
-		key := e.Name + "|" + at.Format(time.RFC3339) // once per limit, tomorrow's too
 		// Text left in the prompt: the start of "continue" (typed while the
 		// limit was on, #2568's "co") is finished; anything else is someone's
 		// draft and is left alone.
@@ -421,4 +441,58 @@ func continueRest(typed string) (string, bool) {
 		return "continue"[len(typed):], true
 	}
 	return "", false
+}
+
+// useAccount is swapped in tests.
+var useAccount = session.UseAccount
+
+// limitOwner: which account was signed in the first time a limit notice (by
+// reset time) was seen. A notice still on a tile's screen after a switch or
+// /login belongs to that account, not to whoever is current now; crediting the
+// current one marked `main` limited until 18:00 on 2026-11-23 when it was 12:30.
+// A notice first seen after a cs restart counts as the current account's.
+var limitOwner = map[string]string{}
+
+// switchedOnLimit switches Claude to the next saved account once per limit
+// (all tiles share one login, so the first tile to see it does the switch).
+// It reports whether the switch happened, for every later tile on this limit.
+func switchedOnLimit(at, now time.Time, done map[string]bool) bool {
+	gk := "acct|" + at.Format(time.RFC3339)
+	if done[gk] {
+		return done[gk+"|ok"]
+	}
+	done[gk] = true
+	cur := session.CurrentAccountUUID()
+	owner, seen := limitOwner[gk]
+	if !seen {
+		owner = cur
+		limitOwner[gk] = owner
+	}
+	session.MarkAccountLimited(owner, at)
+	if owner != cur {
+		// Old account's notice, left on the screen: already moved on.
+		logEvent("daemon: limit until %s was the previous account's; not switching", at.Format("15:04"))
+		return false
+	}
+	next, ok := session.NextAccount(now)
+	if !ok {
+		logEvent("daemon: usage limit until %s and no other saved account has room (cs account add <name>)", at.Format("15:04"))
+		return false
+	}
+	if err := useAccount(next.Name); err != nil {
+		logEvent("daemon: switch to account %s failed: %v", next.Name, err)
+		return false
+	}
+	logEvent("daemon: usage limit until %s, switched to account %s", at.Format("15:04"), next.Name)
+	done[gk+"|ok"] = true
+	return true
+}
+
+// noteLimitSeen records the signed-in account when a limit notice first
+// shows up on any tile, before anything decides what to do with it.
+func noteLimitSeen(at time.Time) {
+	gk := "acct|" + at.Format(time.RFC3339)
+	if _, ok := limitOwner[gk]; !ok {
+		limitOwner[gk] = session.CurrentAccountUUID()
+	}
 }
