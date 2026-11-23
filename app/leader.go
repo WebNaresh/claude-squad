@@ -28,8 +28,21 @@ func isLeaderKey(k string) bool { return k == leaderKey || k == leaderSpace }
 // commandKeys are the Ctrl+] commands, in the order shown in the key bar.
 var commandKeys = []ui.Key{
 	{"C", "new Claude"}, {"T", "terminal"}, {"E", "new terminal"}, {"A", "add project"}, {"N", "issues"},
-	{"S", "source control"}, {"P", "push"}, {"Y", "copy"}, {"W", "close session"}, {"U", "off PR + skip"}, {"X", "close tab"},
+	{"S", "source control"}, {"P", "push"}, {"Y", "copy"}, {"W", "close session"}, {"U", "off PR + skip"}, {"X", "close tab"}, {"R", "hidden projects"},
+	{"G", "stop auto"},
 	{"!", "needs you"}, {"?", "help"}, {"Q", "quit"},
+}
+
+// commandKeysNow is commandKeys with G saying what it does now (stop or
+// start the auto pickup of the project on screen).
+func (m *home) commandKeysNow() []ui.Key {
+	keys := append([]ui.Key(nil), commandKeys...)
+	for i, k := range keys {
+		if k[0] == "G" {
+			keys[i] = ui.Key{"G", m.autoKeyLabel()}
+		}
+	}
+	return keys
 }
 
 // handleLeader runs the command after Ctrl+].
@@ -42,6 +55,10 @@ func (m *home) handleLeader(msg tea.KeyMsg) tea.Cmd {
 		return chooseProjectCmd
 	case "x", "X":
 		return m.closeActiveProject()
+	case "r", "R":
+		return m.openTabPicker()
+	case "g", "G":
+		return m.clickAutoButton()
 	case "!":
 		return m.jumpToNeedsYou()
 	case "?", "/":
@@ -135,7 +152,7 @@ func (m *home) keyBar(width int) string {
 	switch {
 	case m.leader:
 		state = "⌃Space pressed, now press"
-		keys = commandKeys
+		keys = m.commandKeysNow()
 	case m.serversFocused:
 		state = "Servers"
 		keys = []ui.Key{{"↑↓", "server"}, {"x/enter", "stop"}, {"esc", "back to terminal"}, {"⇧↑", "source control"}}
@@ -196,7 +213,7 @@ var (
 // is on (after ⌃Space), so it's obvious the next key is a command.
 func (m *home) leaderMenu() string {
 	rows := []string{leaderTitleStyle.Render("⌃Space · command mode"), ""}
-	keys := append([]ui.Key{{"←→", "project"}, {"↑↓", "session"}, {"I", "back to typing"}}, commandKeys...)
+	keys := append([]ui.Key{{"←→", "project"}, {"↑↓", "session"}, {"I", "back to typing"}}, m.commandKeysNow()...)
 	half := (len(keys) + 1) / 2
 	item := func(k ui.Key) string {
 		return leaderKeyStyle.Render(fmt.Sprintf("%-3s", k[0])) + " " + leaderDescStyle.Render(fmt.Sprintf("%-16s", k[1]))

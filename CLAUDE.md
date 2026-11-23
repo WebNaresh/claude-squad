@@ -9,6 +9,7 @@ Personal fork of `smtg-ai/claude-squad`: a Go + tmux terminal UI that runs many 
 
 - `app/app.go` — TUI layout, key handling. `ui/` — list, preview, diff, tabbed window, overlays.
 - `session/instance.go` — agent lifecycle (`Start`, statuses `Running`/`Ready`/`Paused`). `session/git/` — worktrees + diff. `session/tmux/` — tmux sessions.
+- `session/accounts.go` — saved Claude logins (`cs account add|list|use|remove`) and the switch on a usage limit (`app/limitresume.go`). Why and past bugs: `docs/issue-log.md` ("Switch Claude account").
 - `daemon/daemon.go` — background loop (auto-yes today; issue polling goes here).
 - `config/config.go`, `config/state.go` — saved settings and instance state.
 - `ui/projecttabs.go` — project tab row. `session/external.go` — Claude sessions started outside cs (launcher: `scripts/claude-tmux`, symlinked as `~/.claude-squad/bin/claude`).

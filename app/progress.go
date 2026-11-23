@@ -16,7 +16,7 @@ import (
 // Progress strip: one line above the tiles for the current project, so the
 // work shows: the open PR filling up to autoMaxPerPR issues, open issues left
 // (and how many fewer than this morning), sessions running out of
-// autoMaxSessions, sessions finished today and the day streak, plus totals
+// sessionLimit, sessions finished today and the day streak, plus totals
 // across all projects. "Finished" = a Claude session closed with ⌃Space W
 // (closeSession); counts are kept in progress.json so restarts don't lose them.
 
@@ -33,6 +33,9 @@ var (
 	progGood    = lipgloss.NewStyle().Foreground(lipgloss.Color("#3fb950")).Bold(true)
 	progFire    = lipgloss.NewStyle().Foreground(lipgloss.Color("#f0883e")).Bold(true)
 	progDimNote = lipgloss.NewStyle().Foreground(lipgloss.Color("#6e6e6e"))
+	// The auto pickup's stop/start button (clickable, see clickAutoButton).
+	progStopBtn  = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Background(lipgloss.Color("#b62324")).Bold(true)
+	progStartBtn = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Background(lipgloss.Color("#238636")).Bold(true)
 )
 
 func progressFile() string {
@@ -121,6 +124,7 @@ func (p *progressData) doneOn(day string) int {
 type projectStats struct {
 	pr, inPR, open, running int
 	known                   bool // the issue list has been loaded
+	prFull                  bool // a session slot is free, but the PR has no room
 }
 
 func (m *home) projectStats(project string) projectStats {
@@ -132,6 +136,8 @@ func (m *home) projectStats(project string) projectStats {
 	s.known = true
 	room, pr := prRoom(issues)
 	s.pr, s.inPR = pr, autoMaxPerPR-room
+	s.prFull = pr > 0 && room-joining(issues, m.busyIssues(project)) <= 0 &&
+		s.running < sessionLimit(project) && m.autoOn(project)
 	for _, is := range issues {
 		if is.PR == 0 {
 			s.open++
@@ -174,6 +180,8 @@ func (m *home) renderProgress(width int) string {
 			// The branch's PR closes no issue (gai pr from dev with no "Closes #N"),
 			// so no issue maps to it: still show it instead of "no open PR yet".
 			parts = append(parts, progLabel.Render(fmt.Sprintf("PR #%d ", e.pr.Number))+progLabel.Render("open"))
+		} else if prUnclear(m.issueCache[project]) {
+			parts = append(parts, progLabel.Render("which PR? gai asks in its tile"))
 		} else {
 			parts = append(parts, progLabel.Render("no open PR yet"))
 		}
@@ -187,19 +195,39 @@ func (m *home) renderProgress(width int) string {
 		}
 		parts = append(parts, open)
 	}
-	parts = append(parts, progLabel.Render("▶ ")+progValue.Render(fmt.Sprintf("%d/%d", s.running, autoMaxSessions))+progLabel.Render(" running"))
+	running := progLabel.Render("▶ ") + progValue.Render(fmt.Sprintf("%d/%d", s.running, sessionLimit(project))) + progLabel.Render(" running")
+	if s.prFull {
+		// A free slot with no reason on screen reads as the limit not working.
+		running += progDimNote.Render(" (PR full: merge it to start more)")
+	}
+	parts = append(parts, running)
 	done := m.progress.Done[today()][project]
 	parts = append(parts, progGood.Render(fmt.Sprintf("✓ %d", done))+progLabel.Render(" done today"))
 	if st := m.progress.streak(); st > 0 {
 		parts = append(parts, progFire.Render(fmt.Sprintf("🔥 %d-day streak", st)))
 	}
-	switch {
-	case !m.autoOn(project):
-		parts = append(parts, progDimNote.Render("auto off"))
-	case daemonRunning():
-		parts = append(parts, progGood.Render("⟳ auto"))
+	// The auto pickup's state plus a button to stop or start it: stopping it
+	// is how to keep working on the sessions already open (and clean up git)
+	// without new issues starting when a slot frees.
+	var btn string
+	if m.autoOn(project) {
+		if daemonRunning() {
+			parts = append(parts, progGood.Render("⟳ auto"))
+		} else {
+			parts = append(parts, progLabel.Render("auto on"))
+		}
+		btn = progStopBtn.Render(autoStopLabel)
+	} else {
+		parts = append(parts, progDimNote.Render("auto stopped: no new issues start"))
+		btn = progStartBtn.Render(autoStartLabel)
 	}
-	line := " " + strings.Join(parts, sep)
+	line := " " + strings.Join(parts, sep) + " "
+	m.autoBtnSpan = [2]int{}
+	if at := ansi.StringWidth(line); at+ansi.StringWidth(btn) <= width {
+		x0 := m.screenWidth - m.paneWidth // the strip's first column, as in hitGrid
+		m.autoBtnSpan = [2]int{x0 + at, x0 + at + ansi.StringWidth(btn)}
+	}
+	line += btn
 
 	// All projects: finished today and how full their PRs are.
 	if len(m.projectTabs.Projects()) > 1 {

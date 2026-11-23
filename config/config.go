@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 const (
@@ -50,6 +51,9 @@ type Config struct {
 	Profiles []Profile `json:"profiles,omitempty"`
 	// OpenProjects are the project tabs shown across the top, in tab order.
 	OpenProjects []string `json:"open_projects,omitempty"`
+	// ProjectAdded is when each project was last added with "+ add project":
+	// a new tab counts as just used, so it doesn't hide before its first use.
+	ProjectAdded map[string]time.Time `json:"project_added,omitempty"`
 	// MouseOff turns mouse capture off. It is on by default: clicks focus
 	// tiles and open images, the wheel scrolls. Off gives the terminal's own
 	// text selection back (Ctrl+] m toggles).

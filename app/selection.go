@@ -2,6 +2,7 @@ package app
 
 import (
 	"claude-squad/session"
+	"claude-squad/ui/overlay"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -103,7 +104,14 @@ func (m *home) highlightSelection(view string) string {
 			continue
 		}
 		l := lines[y]
-		lines[y] = ansi.Cut(l, 0, from) + "\x1b[7m" + ansi.Strip(ansi.Cut(l, from, to+1)) + "\x1b[27m" + ansi.Cut(l, to+1, ansi.StringWidth(l))
+		// Cuts keep escape codes from the part they drop: without this, a
+		// Hindi row's column moves would throw the highlight across the screen.
+		l, pinned := overlay.StripColumnMoves(l)
+		start, end := "", ""
+		if pinned {
+			start, end = overlay.ColumnMove(from), overlay.ColumnMove(to+1)
+		}
+		lines[y] = ansi.Cut(l, 0, from) + start + "\x1b[7m" + ansi.Strip(ansi.Cut(l, from, to+1)) + "\x1b[27m" + end + ansi.Cut(l, to+1, ansi.StringWidth(l))
 	}
 	return strings.Join(lines, "\n")
 }

@@ -22,3 +22,15 @@ func TestVideoRequestWaits(t *testing.T) {
 		t.Error("gg:feature issue waits; want free")
 	}
 }
+
+// A gg:research issue only collects findings, so it waits like a video request.
+func TestResearchIssueWaits(t *testing.T) {
+	var research Issue
+	research.Labels = append(research.Labels, struct {
+		Name string `json:"name"`
+	}{"gg:research"})
+	research.Research = hasLabel(research, researchLabel)
+	if !research.Waits() || research.WaitReason() != "research notes, no work to start" {
+		t.Errorf("gg:research issue: Waits() = %v, reason %q", research.Waits(), research.WaitReason())
+	}
+}

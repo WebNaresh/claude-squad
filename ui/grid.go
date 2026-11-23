@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 
+	"claude-squad/ui/overlay"
+
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -40,6 +42,8 @@ type GridTile struct {
 	// Age is how long the session has been running ("12m", "1h 5m"), shown
 	// as a small tag before the model. Empty: unknown.
 	Age string
+	// X is the screen column of the tile's left edge (RenderGrid sets it).
+	X int
 }
 
 // Smallest useful tile (columns × rows, border included); the grid fits as
@@ -103,8 +107,9 @@ func GridTileSize(n, width, height int) (w, h int) {
 }
 
 // RenderGrid draws the page of tiles containing the focused one, the
-// focused tile with a bright thick border.
-func RenderGrid(tiles []GridTile, focused, width, height int) string {
+// focused tile with a bright thick border. originX is the screen column of
+// the grid's left edge.
+func RenderGrid(tiles []GridTile, focused, width, height, originX int) string {
 	if len(tiles) == 0 {
 		return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, gridEmptyMessage)
 	}
@@ -127,7 +132,9 @@ func RenderGrid(tiles []GridTile, focused, width, height int) string {
 				cells = append(cells, lipgloss.NewStyle().Width(tileW).Height(tileH).Render(""))
 				continue
 			}
-			cells = append(cells, RenderTile(shown[i], start+i == focused, innerW, innerH))
+			t := shown[i]
+			t.X = originX + c*tileW
+			cells = append(cells, RenderTile(t, start+i == focused, innerW, innerH))
 		}
 		rowStrs = append(rowStrs, lipgloss.JoinHorizontal(lipgloss.Top, cells...))
 	}
@@ -167,26 +174,39 @@ func RenderTile(t GridTile, focused bool, w, h int) string {
 	edge := lipgloss.NewStyle().Foreground(color)
 
 	// Title on the left of the top border, status on the right.
-	status := gridStatusStyle.Render(" " + t.Status + " ")
+	state := gridStatusStyle.Render(" " + t.Status + " ")
+	short := state // the same state in fewer cells
 	if t.Stage != "" {
-		status = stageTag(t.Stage)
+		state, short = stageTag(t.Stage, false), stageTag(t.Stage, true)
 	}
 	titleText := t.Title
 	if t.NeedsYou {
-		status = gridNeedsStyle.Render(" needs you ")
+		state = gridNeedsStyle.Render(" needs you ")
+		short = state
 		titleText = "❓ " + titleText
 	}
+	model, modelShort := "", ""
 	if t.Model != "" && !t.Ghost {
-		status = modelTag(t.Model) + status
+		model, modelShort = modelTag(t.Model), modelTag(strings.TrimSuffix(t.Model, "[1m]"))
 	}
-	if age := gridStatusStyle.Render(" ⏱ "+t.Age) + " "; t.Age != "" && !t.Ghost &&
-		lipgloss.Width(age+status) <= w-16 {
-		// Only when it leaves room for the name; a narrow tile drops it first.
-		status = age + status
+	status := model + state
+	if t.Age != "" && !t.Ghost {
+		// The run time and the model both stay: the state shortens first, then
+		// the model loses its [1m]. Only when even that leaves no room for the
+		// name does a narrow tile drop the time.
+		age := gridStatusStyle.Render(" ⏱ "+t.Age) + " "
+		for _, s := range []string{model + state, model + short, modelShort + short} {
+			if lipgloss.Width(age+s) <= w-16 {
+				status = age + s
+				break
+			}
+		}
 	}
-	if focused && !t.Ghost {
-		// Said in words on the right too, where the name tag can't be cut.
-		status = selectedTag() + " " + status
+	if tagged := selectedTag() + " " + status; focused && !t.Ghost && lipgloss.Width(tagged) <= w-16 {
+		// Said in words on the right too, when the name keeps its room. On a
+		// narrow tile it took the whole name (and the time) for a label the
+		// bottom border already carries.
+		status = tagged
 	}
 	titleStyle := gridTitleStyle
 	if t.Ghost {
@@ -220,7 +240,7 @@ func RenderTile(t GridTile, focused bool, w, h int) string {
 		lines = lines[len(lines)-h:]
 	}
 	for i, l := range lines {
-		lines[i] = ansi.Truncate(l, w, "")
+		lines[i] = pinLineEnd(ansi.Truncate(l, w, ""), t.X+2)
 	}
 	for len(lines) < h {
 		lines = append(lines, "")
@@ -235,6 +255,20 @@ func RenderTile(t GridTile, focused bool, w, h int) string {
 	bottom := edge.Render(border.BottomLeft+strings.Repeat(border.Bottom, max(0, w+1-lipgloss.Width(tag)))) +
 		tag + edge.Render(border.Bottom+border.BottomRight)
 	return top + "\n" + style.BorderTop(false).BorderBottom(false).Padding(0, 1).Width(w+2).Render(body) + "\n" + bottom
+}
+
+// pinLineEnd puts the cursor back where cs measured the end of a tile line,
+// starting at screen column textX. Terminals disagree on the width of
+// Devanagari marks and some emoji: Terminal.app draws those rows wider than
+// cs counts them, which used to push the tile's border and every tile to its
+// right sideways, row by row. ASCII lines can't drift and stay untouched.
+func pinLineEnd(line string, textX int) string {
+	for i := 0; i < len(line); i++ {
+		if line[i] >= 0x80 {
+			return line + overlay.ColumnMove(textX+ansi.StringWidth(line))
+		}
+	}
+	return line
 }
 
 // selectedTag is the white "◀ SELECTED" label on the selected tile's top and
@@ -274,13 +308,30 @@ func cutKeepingIssue(title string, w int) string {
 // stageTag draws the /stage progress as a solid tag, so a finished session
 // can't be mistaken for one still working: green "✓ DONE · close it", amber
 // when a question waits on the user, blue while staging is under way.
-func stageTag(stage string) string {
+func stageTag(stage string, short bool) string {
 	bg, fg, text := lipgloss.Color("#1f6feb"), lipgloss.Color("#ffffff"), stage
 	switch {
 	case strings.HasPrefix(stage, "✓ done"):
 		bg, fg, text = lipgloss.Color("#2ea043"), lipgloss.Color("#0d1117"), "✓ DONE · close it"
+		if short {
+			text = "✓ DONE"
+		}
 	case strings.HasPrefix(stage, "?"):
 		bg, fg = lipgloss.Color("#e5a50a"), lipgloss.Color("#0d1117")
 	}
+	if s, ok := stageShort[stage]; ok && short {
+		text = s
+	}
 	return lipgloss.NewStyle().Bold(true).Foreground(fg).Background(bg).Padding(0, 1).Render(text)
+}
+
+// stageShort: the /stage steps in fewer cells, for a tile with no room for
+// the full words next to the run time and the model.
+var stageShort = map[string]string{
+	"⋯ staging":          "⋯ stage",
+	"✓ staged":           "✓ stage",
+	"⇡ posting proof":    "⇡ proof",
+	"✓ proof posted":     "✓ proof",
+	"? guide update":     "? guide",
+	"📖 publishing guide": "📖 guide",
 }

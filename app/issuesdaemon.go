@@ -8,8 +8,9 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strconv"
+	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -20,7 +21,7 @@ import (
 //
 // Every daemonEvery, for each open project with auto on (not switched off
 // with a in the issue picker): count its Claude sessions; while fewer than
-// autoMaxSessions run and its open PR has fewer than autoMaxPerPR issues,
+// sessionLimit run and its open PR has fewer than autoMaxPerPR issues,
 // open sessions for the oldest open issues that aren't skipped, in a PR, or
 // already running. Each runs `gai issue` (one at a time across all projects,
 // since gai rewrites the shared PR), and the runner answers gai's questions:
@@ -69,11 +70,12 @@ func RunIssuesDaemon() error {
 	issuesAt := map[string]time.Time{}
 	issues := map[string][]session.Issue{}
 	said := map[string]string{}
-	ready := map[string]bool{}      // projects already on a fresh base for their new batch
-	saidBase := map[string]string{} // last "not starting a new batch yet" reason logged
-	limitDone := map[string]bool{}  // sessions already resumed after a usage limit
-	colored := loadColors()         // the /color cs gave each issue session ("" = the user's own)
-	comments := loadCommentState()  // GitHub comments already typed into issue tiles (issuecomments.go)
+	ready := map[string]bool{}       // projects already on a fresh base for their new batch
+	prSeen := map[string]time.Time{} // when each project last had an open PR of its own
+	saidBase := map[string]string{}  // last "not starting a new batch yet" reason logged
+	limitDone := map[string]bool{}   // sessions already resumed after a usage limit
+	colored := loadColors()          // the /color cs gave each issue session ("" = the user's own)
+	comments := loadCommentState()   // GitHub comments already typed into issue tiles (issuecomments.go)
 	nextLimitCheck := time.Time{}
 	nextScan := time.Time{}
 
@@ -109,6 +111,16 @@ func RunIssuesDaemon() error {
 		if len(queue) > 0 {
 			next := queue[0]
 			queue = queue[1:]
+			// Queued minutes ago: it may have closed since (a PR merged).
+			if closed, err := session.IssueClosed(next.project, next.issue.Number); err != nil || closed {
+				why := "it is closed on GitHub"
+				if err != nil {
+					why = fmt.Sprintf("GitHub didn't say whether it is still open (%v)", err)
+				}
+				logEvent("daemon: not starting #%d in %s: %s", next.issue.Number, filepath.Base(next.project), why)
+				session.CloseQueuedIssue(next.project, next.issue.Number)
+				continue
+			}
 			name, err := session.StartIssueSession(next.project, next.issue)
 			if err != nil {
 				logEvent("daemon: could not start #%d in %s: %v", next.issue.Number, filepath.Base(next.project), err)
@@ -156,6 +168,9 @@ func RunIssuesDaemon() error {
 				if e.Path != p && !strings.HasPrefix(e.Path, p+string(filepath.Separator)) {
 					continue
 				}
+				if closeNetworkDeadTile(p, e) {
+					continue // no longer busy; started again after gaiRetryAfter
+				}
 				if n := session.IssueNumberOf(e.Name); n > 0 {
 					busy[n] = true
 				}
@@ -163,11 +178,12 @@ func RunIssuesDaemon() error {
 					running++
 				}
 			}
-			free := autoMaxSessions - running
+			limit := sessionLimit(p)
+			free := limit - running
 			if free <= 0 {
-				if key := fmt.Sprint("full", running); said[p] != key {
+				if key := fmt.Sprint("full", running, limit); said[p] != key {
 					said[p] = key
-					logEvent("daemon: %s: %d sessions running (limit %d); waiting for one to close", filepath.Base(p), running, autoMaxSessions)
+					logEvent("daemon: %s: %d sessions running (limit %d); waiting for one to close", filepath.Base(p), running, limit)
 				}
 				continue
 			}
@@ -180,16 +196,15 @@ func RunIssuesDaemon() error {
 				issues[p], issuesAt[p] = list, time.Now()
 				writeIssueCache(p, list) // the window's strip reads it
 			}
+			// Includes a PR of yours from the checked-out branch that lists no
+			// issues yet (gai's body can come out without "Closes #…", like
+			// glitchgrab #577): the batch keeps going on it with no branch switch.
 			room, pr := prRoom(issues[p])
-			// A PR already open from the checked-out branch is this batch's
-			// PR even when it lists no issues yet (gai's body can come out
-			// without "Closes #…", like glitchgrab #577): keep going on it,
-			// with no branch switch. Without this, the batch waited for the
-			// cleanup, which waits for every session to close.
-			if pr == 0 {
-				if n := openPRHere(p); n > 0 {
-					pr, room = n, autoMaxPerPR
-				}
+			unclear := prUnclear(issues[p])
+			// gai's question is already waiting in a tile: more tiles would
+			// only ask it again.
+			if unclear && time.Since(prAsked[p]) < gaiRetryAfter {
+				continue
 			}
 			room -= joining(issues[p], busy)
 			if room <= 0 {
@@ -213,11 +228,25 @@ func RunIssuesDaemon() error {
 			if offer == 0 {
 				continue
 			}
+			// The project's PR just went away (merged): for a moment GitHub
+			// still shows its issues open and on no PR, and they were all
+			// started again (practice-stack #3244 → #3254, 2026-11-14). Wait
+			// until GitHub has closed them and the list has caught up.
+			if pr > 0 {
+				prSeen[p] = time.Now()
+			} else if since := time.Since(prSeen[p]); since < prSettle {
+				if key := "settle"; said[p] != key {
+					said[p] = key
+					logEvent("daemon: %s: its PR closed %s ago; new batch waits %s for GitHub to close that PR's issues", filepath.Base(p), since.Round(time.Second), prSettle)
+				}
+				continue
+			}
 			// A new batch (no open PR of the project's own): start it from an
 			// up-to-date main, not the merged branch (batchbase.go). Only when
 			// an issue is about to start; once its PR exists, the batch
 			// continues on that branch.
-			if pr == 0 && !ready[p] {
+			// Not when PRs are open and only you can say which: that isn't a new batch.
+			if pr == 0 && !unclear && !ready[p] {
 				// Switching branches under a working session moved its
 				// commits onto main (practice-stack, 6 Oct 11:12: "1 running",
 				// tree clean for that moment). The switch waits until no
@@ -261,6 +290,9 @@ func RunIssuesDaemon() error {
 				delete(ready, p) // the next time no PR is open, clean up again
 			}
 			n := min(free, room)
+			if unclear {
+				n = min(n, 1) // one tile asks; the rest wait for its answer
+			}
 			for _, is := range issues[p] {
 				if n == 0 {
 					break
@@ -291,17 +323,179 @@ var gaiFailed = map[string]time.Time{}
 
 const gaiRetryAfter = 30 * time.Minute
 
+// prSettle: how long after a project's PR goes away a new batch waits, so
+// the list read next no longer shows the merged PR's issues as free.
+const prSettle = 2 * time.Minute
+
+// prAsked: when gai's "which PR" was last left for the user, per project.
+var prAsked = map[string]time.Time{}
+
+// alertUser shows a macOS notification; best effort, the tile still waits.
+var alertUser = func(text string) {
+	_ = exec.Command("osascript", "-e", fmt.Sprintf("display notification %q with title \"claude-squad\"", text)).Run()
+}
+
 func gaiFailedRecently(project string, n int) bool {
 	at, ok := gaiFailed[fmt.Sprint(project, "#", n)]
 	return ok && time.Since(at) < gaiRetryAfter
+}
+
+// gaiNetworkErr matches what gh prints when GitHub can't be reached or is
+// failing. Keep it in step with _gai_gh_read's list in gai-tools `gai`, plus
+// gai's own words when its gh login check can't reach GitHub (#2944).
+var gaiNetworkErr = regexp.MustCompile(`(?i)i/o timeout|dial tcp|error connecting to|connection (reset|refused)|tls handshake|no such host|network is unreachable|client\.timeout|unexpected eof|HTTP 50[234]|status code: 50[234]|could not reach github|github unreachable`)
+
+// deadChecked: when GitHub was last asked about a dead tile, by session name.
+var deadChecked = map[string]time.Time{}
+
+const deadCheckEvery = 5 * time.Minute
+
+var listDeadIssues = session.ListOpenIssues
+
+// closeNetworkDeadTile closes an issue tile whose gai died on a GitHub or
+// network error, and reports whether it did. Nothing can be done in such a
+// tile, and an open tile counts as busy, so the issue was stuck until someone
+// closed it by hand (#2987). Any other error stays on screen for the user: a
+// PR gai can't create, a login, a bad issue.
+func closeNetworkDeadTile(project string, e *session.ExternalSession) bool {
+	n := session.IssueNumberOf(e.Name)
+	if n == 0 || e.Kind != session.KindTmux || !session.PaneDead(e.Name) {
+		return false
+	}
+	history := session.PaneHistory(e.Name)
+	attached := strings.Contains(history, "✓ Attached ")
+	if !gaiDiedOnNetwork(history) || time.Since(deadChecked[e.Name]) < deadCheckEvery || detaching(e.Name) {
+		return false
+	}
+	// Ask GitHub, not the screen: another issue's gai can write this one onto
+	// the PR after its tile died (#2987). No answer keeps the tile too, so
+	// nothing is closed during an outage.
+	deadChecked[e.Name] = time.Now()
+	list, err := listDeadIssues(project)
+	if err == nil && attached && issuePR(list, n) > 0 {
+		// gai attached it, then died before Claude started (#3327: TLS timeout
+		// on the PR body write). The runner skips issues on a PR, so take it
+		// off first; the tile closes once GitHub shows it off, and the issue
+		// starts again. A failed removal is tried again on the next check.
+		detachDeadTile(project, e.Name, n, issuePR(list, n), history)
+		return false
+	}
+	if err != nil || !issueNotOnPR(list, n) {
+		logEvent("daemon: #%d: dead tile kept (on a PR, or GitHub didn't answer: %v)", n, err)
+		return false
+	}
+	if err := session.KillSession(e.Name); err != nil {
+		logEvent("daemon: could not close dead tile %s: %v", e.Name, err)
+		return false
+	}
+	logEvent("daemon: #%d: gai died on a GitHub error, tile closed, starts again when a slot is free (at most every %s): %s", n, gaiRetryAfter, gaiLastWords(history))
+	return true
+}
+
+// issueNotOnPR reports whether issue n is open and on no PR, so the runner
+// starts it again once its tile closes.
+func issueNotOnPR(list []session.Issue, n int) bool {
+	for _, is := range list {
+		if is.Number == n {
+			return is.PR == 0
+		}
+	}
+	return false
+}
+
+// issuePR returns the PR open issue n is on, 0 when none or not listed.
+func issuePR(list []session.Issue, n int) int {
+	for _, is := range list {
+		if is.Number == n {
+			return is.PR
+		}
+	}
+	return 0
+}
+
+// removeDeadFromPR takes an issue off its PR; a var so tests don't run gai.
+var removeDeadFromPR = removeFromPR
+
+var (
+	detachMu  sync.Mutex
+	detachSet = map[string]bool{}
+)
+
+// detaching reports whether a dead tile's issue is being taken off its PR.
+func detaching(name string) bool {
+	detachMu.Lock()
+	defer detachMu.Unlock()
+	return detachSet[name]
+}
+
+// detachDeadTile takes a dead tile's attached issue off its PR in the
+// background (gai can take a minute), then closes the tile once GitHub shows
+// it off, so the runner starts it again.
+func detachDeadTile(project, name string, n, pr int, history string) {
+	detachMu.Lock()
+	detachSet[name] = true
+	detachMu.Unlock()
+	logEvent("daemon: #%d: gai died after attaching it to PR #%d, before Claude started (%s); taking it off the PR to start again",
+		n, pr, gaiLastWords(history))
+	go func() {
+		defer func() {
+			detachMu.Lock()
+			delete(detachSet, name)
+			detachMu.Unlock()
+		}()
+		if err := removeDeadFromPR(project, n, pr); err != nil {
+			logEvent("daemon: #%d: could not take it off PR #%d: %v; tried again in %s", n, pr, err, deadCheckEvery)
+			return
+		}
+		list, err := listDeadIssues(project)
+		if err != nil || !issueNotOnPR(list, n) {
+			logEvent("daemon: #%d: still on a PR after removing (or GitHub didn't answer: %v); tried again in %s", n, err, deadCheckEvery)
+			return
+		}
+		// The user may have started the issue again in this tile meanwhile.
+		if !session.PaneDead(name) {
+			logEvent("daemon: #%d: off PR #%d; tile %s is live again, left open", n, pr, name)
+			return
+		}
+		if err := session.KillSession(name); err != nil {
+			logEvent("daemon: could not close dead tile %s: %v", name, err)
+			return
+		}
+		logEvent("daemon: #%d: off PR #%d, dead tile closed, starts again when a slot is free (at most every %s)", n, pr, gaiRetryAfter)
+	}()
+}
+
+// gaiCanRetry reports whether a dead gai's screen shows a failure that
+// closing the tile and starting the issue again can fix as is. Not once gai
+// attached the issue: the runner skips issues on a PR, so it must come off
+// the PR first (detachDeadTile).
+func gaiCanRetry(history string) bool {
+	return !strings.Contains(history, "✓ Attached ") && gaiDiedOnNetwork(history)
+}
+
+// gaiDiedOnNetwork reports whether a dead gai's last words are a GitHub or
+// network error. Not when the failure is local (Ollama on localhost): it
+// needs the user.
+func gaiDiedOnNetwork(history string) bool {
+	words := gaiLastWords(history)
+	low := strings.ToLower(words)
+	for _, local := range []string{"localhost", "127.0.0.1", "ollama"} {
+		if strings.Contains(low, local) {
+			return false
+		}
+	}
+	return gaiNetworkErr.MatchString(words)
 }
 
 // gaiLastWords returns the last few lines gai printed, for the log.
 func gaiLastWords(screen string) string {
 	var keep []string
 	lines := strings.Split(screen, "\n")
+	if at := deadLineAt(lines); at >= 0 {
+		lines = lines[:at] // the dead line, wrapped tail too
+	}
 	for i := len(lines) - 1; i >= 0 && len(keep) < 4; i-- {
-		if l := strings.TrimSpace(lines[i]); l != "" && !strings.HasPrefix(l, "Pane is dead") {
+		if l := strings.TrimSpace(lines[i]); l != "" {
 			keep = append([]string{l}, keep...)
 		}
 	}
@@ -315,17 +509,17 @@ func stepDaemonJob(j *daemonJob, issues []session.Issue) bool {
 	switch {
 	case !alive || session.PaneDead(j.name):
 		logEvent("daemon: gai issue #%d stopped before Claude started; its tile keeps what gai said: %s",
-			j.issue.Number, gaiLastWords(session.PaneScreen(j.name)))
+			j.issue.Number, gaiLastWords(session.PaneHistory(j.name)))
 		gaiFailed[fmt.Sprint(j.project, "#", j.issue.Number)] = time.Now()
 		return true
 	case time.Since(j.started) > issueJobTimeout:
 		logEvent("daemon: #%d taking long; leaving it in its tile", j.issue.Number)
 		return true
-	case strings.HasPrefix(line, "#") || strings.HasPrefix(line, "▶"):
+	case gaiListLine(line):
 		if j.answered != "pr" {
 			j.answered = "pr"
 			screen := session.PaneScreen(j.name)
-			if !strings.Contains(screen, "Multiple open PRs") {
+			if !gaiAsksPR(screen) {
 				return false
 			}
 			target := 0
@@ -337,6 +531,8 @@ func stepDaemonJob(j *daemonJob, issues []session.Issue) bool {
 				logEvent("daemon: #%d picked PR #%d", j.issue.Number, target)
 			} else {
 				logEvent("daemon: #%d gai asks which PR; none of this project's in its list, left in its tile", j.issue.Number)
+				prAsked[j.project] = time.Now()
+				alertUser(fmt.Sprintf("%s #%d: pick a PR in its tile", filepath.Base(j.project), j.issue.Number))
 			}
 		}
 	case isGaiPrompt(line) && line != j.answered:
@@ -376,21 +572,6 @@ func modTime(path string) time.Time {
 		return st.ModTime()
 	}
 	return time.Time{}
-}
-
-// openPRHere is the open PR from the project's checked-out branch, or 0.
-func openPRHere(project string) int {
-	out, err := exec.Command("git", "-C", project, "branch", "--show-current").Output()
-	cur := strings.TrimSpace(string(out))
-	if err != nil || cur == "" {
-		return 0
-	}
-	n, err := openPRFrom(project, cur)
-	if err != nil {
-		return 0
-	}
-	v, _ := strconv.Atoi(n)
-	return v
 }
 
 // onDefaultBranch reports whether project has its default branch (origin's

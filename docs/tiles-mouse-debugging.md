@@ -54,6 +54,12 @@ tmux server), so repeated "resize X to WxH" log lines are harmless.
 - Fix: `app.Run` turns auto-wrap off (`\x1b[?7l`) while cs runs and back on
   at exit, so an over-wide row is clipped at the edge instead. Don't remove it.
   If a killed cs leaves the shell not wrapping, `printf '\e[?7h'` restores it.
+- Same disagreement, sideways: a Hindi row is wider in Terminal.app than cs
+  counts, so that row's borders and the tiles to its right shift. `pinLineEnd`
+  (`ui/grid.go`) ends every non-ASCII tile line with an absolute column move.
+  Don't remove it. The grid origin passed to `RenderGrid` must match `hitGrid`.
+  `ansi.Cut`/`Truncate` keep escape codes from the part they drop, so cut a tile
+  row only after `overlay.StripColumnMoves` (`PlaceOverlay`, `highlightSelection`).
 
 ## "Nothing happens when I type" in a session
 
@@ -90,7 +96,9 @@ Profiles → (their profile) → Keyboard → "+":
   stack names the blocking call. A flood (>60 messages/s) lists them by type.
 - `~/.claude-squad/usage.log` every 30s: cs CPU, `renders=N/30s avg=…` and the
   Mac's load. Load far above the core count (20–30 with ~30 Claude processes)
-  slows everything, cs included.
+  slows everything, cs included. The line ends with `msgs <type>:<count> …`:
+  the message types behind those renders (each message is a View), so a high
+  `renders=` names its source.
 - Known cause, fixed: trackpad scroll bursts (2,000+ wheel events in two
   minutes) each drew a frame; wheel events now skip the redraw.
 

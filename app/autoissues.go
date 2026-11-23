@@ -13,7 +13,7 @@ import (
 )
 
 // Auto issue loop. For each project with auto on, every few seconds cs
-// counts its Claude sessions; when fewer than autoMaxSessions run and the
+// counts its Claude sessions; when fewer than sessionLimit run and the
 // open PR has room (autoMaxPerPR issues), it opens the issue picker on that
 // project with as many issues ticked as there are free slots (oldest first,
 // never skipped ones). Only on the tab you're on: other tabs show "·N free"
@@ -25,10 +25,9 @@ import (
 // a in the picker switches it off (or back on) for that project.
 
 const (
-	autoMaxSessions = 6
-	autoMaxPerPR    = 15
-	autoEvery       = 5 * time.Second
-	autoListMaxAge  = time.Minute
+	autoMaxPerPR   = 15
+	autoEvery      = 5 * time.Second
+	autoListMaxAge = time.Minute
 )
 
 type autoTickMsg struct{}
@@ -93,19 +92,32 @@ func (m *home) autoRunning(project string) int {
 	return n
 }
 
-// prRoom returns how many more issues the project's open PR takes, and the
-// PR (0 when none is open). gai attaches every issue to the one open PR.
+// prRoom returns how many more issues the project's PR takes, and the PR
+// (0 when there is none to go to). Which PR is session.ChoosePR's call, made
+// when the list loads; another PR's count never holds the batch back.
 func prRoom(issues []session.Issue) (room, pr int) {
-	count := map[int]int{}
 	for _, is := range issues {
-		if is.PR > 0 && !is.PRBot && !is.PRMerged { // a bot's or a merged PR is never where new issues go
-			count[is.PR]++
-			if count[is.PR] > count[pr] || pr == 0 {
-				pr = is.PR
-			}
+		if is.GatherPR > 0 {
+			pr = is.GatherPR
+			break
 		}
 	}
-	return autoMaxPerPR - count[pr], pr
+	if pr == 0 {
+		return autoMaxPerPR, 0
+	}
+	n := 0
+	for _, is := range issues {
+		if is.PR == pr {
+			n++
+		}
+	}
+	return autoMaxPerPR - n, pr
+}
+
+// prUnclear reports whether human PRs are open but none can be picked: gai
+// will ask, and only the user can answer.
+func prUnclear(issues []session.Issue) bool {
+	return len(issues) > 0 && issues[0].PRUnclear
 }
 
 // joining counts the issues whose session is running but which aren't on a
@@ -125,7 +137,7 @@ func joining(issues []session.Issue, busy map[int]bool) int {
 
 // stepAuto runs autoCheck and schedules the next one.
 func (m *home) stepAuto() tea.Cmd {
-	return tea.Batch(m.autoCheck(), m.refreshTabChecks(), autoTick())
+	return tea.Batch(m.autoCheck(), m.refreshTabChecks(), m.refreshQuietTabs(), autoTick())
 }
 
 // autoCheck works out, for every auto project, how many issues could start
@@ -143,13 +155,19 @@ func (m *home) autoCheck() tea.Cmd {
 	for _, p := range m.projectTabs.Projects() {
 		m.projectTabs.SetFree(p, 0)
 		if !m.autoOn(p) {
+			// No auto loop, but its issues still decide if the tab shows.
+			if time.Since(m.autoFetched[p]) > autoListMaxAge && !fetching {
+				fetching = true
+				m.autoFetched[p] = time.Now()
+				cmds = append(cmds, loadIssues(p))
+			}
 			continue
 		}
 		running := m.autoRunning(p)
-		free := autoMaxSessions - running
-		if free <= 0 {
-			continue
-		}
+		free := sessionLimit(p) - running
+		// Loaded even when no session can start: the strip above the tiles
+		// reads this list, and a project at its limit showed no PR or open
+		// counts after every cs restart.
 		issues, cached := m.issueCache[p]
 		if (!cached || time.Since(m.autoFetched[p]) > autoListMaxAge) && !fetching {
 			// One list load per check; the next check decides on it.
@@ -157,7 +175,7 @@ func (m *home) autoCheck() tea.Cmd {
 			m.autoFetched[p] = time.Now()
 			cmds = append(cmds, loadIssues(p))
 		}
-		if !cached {
+		if !cached || free <= 0 {
 			continue
 		}
 		busy, skipped := m.busyIssues(p), readSkipped(p)
@@ -178,6 +196,9 @@ func (m *home) autoCheck() tea.Cmd {
 			}
 		}
 		n := min(free, room, offer)
+		if prUnclear(issues) {
+			n = min(n, 1) // one tile asks which PR; the rest wait for the answer
+		}
 		if n <= 0 {
 			continue
 		}
@@ -211,7 +232,8 @@ func (m *home) offerIssues(project string, n, running, room, pr int) tea.Cmd {
 	if n > 1 {
 		slots = "slots"
 	}
-	note := fmt.Sprintf("%d free %s (%d of %d sessions running)", autoMaxSessions-running, slots, running, autoMaxSessions)
+	limit := sessionLimit(project)
+	note := fmt.Sprintf("%d free %s (%d of %d sessions running)", limit-running, slots, running, limit)
 	if pr > 0 {
 		note += fmt.Sprintf(" · PR #%d has room for %d more", pr, room)
 	}
@@ -242,3 +264,33 @@ func (m *home) autoPickerClosed(project string, started bool) {
 // daemonRunning reports whether the background issue runner is up
 // (issuesdaemon.go); the window then leaves starting issues to it.
 var daemonRunning = func() bool { return config.LockHolder(config.IssuesDaemonLock) != 0 }
+
+const (
+	autoStopLabel  = " ■ stop "
+	autoStartLabel = " ▶ start "
+)
+
+// clickAutoButton stops or starts the auto pickup for the project on screen
+// (the strip's button). Stopping leaves open sessions running; it only keeps
+// new issues from starting, here and in the background runner.
+func (m *home) clickAutoButton() tea.Cmd {
+	project := m.projectTabs.Active()
+	if project == "" {
+		return nil
+	}
+	m.toggleAuto(project)
+	m.gridRenderKey = "" // redraw the strip now
+	if m.autoOn(project) {
+		return m.handleError(fmt.Errorf("auto pickup started for %s: new issues start when a slot frees", filepath.Base(project)))
+	}
+	return m.handleError(fmt.Errorf("auto pickup stopped for %s: open sessions keep running, no new issue starts (▶ start to resume)", filepath.Base(project)))
+}
+
+// autoKeyLabel is ⌃Space G's label: what pressing it does for the project
+// on screen.
+func (m *home) autoKeyLabel() string {
+	if p := m.projectTabs.Active(); p != "" && !m.autoOn(p) {
+		return "start auto"
+	}
+	return "stop auto"
+}

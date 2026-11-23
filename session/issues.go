@@ -11,7 +11,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"claude-squad/session/git"
 )
 
 // Issue is an open GitHub issue of a project.
@@ -29,6 +32,12 @@ type Issue struct {
 	PRBot bool `json:"-"`
 	// PRMerged: that PR is already merged; the issue still counts as taken.
 	PRMerged bool `json:"-"`
+	// GatherPR is the open PR this project's issues go to (see ChoosePR), set
+	// on every issue of a list, or 0. It may hold no issues yet.
+	GatherPR int `json:"-"`
+	// PRUnclear: human PRs are open but none of them can be picked for the
+	// user, so gai's question stays in its tile.
+	PRUnclear bool `json:"-"`
 	// QAFailed: testing failed after its PR was merged (label qa:failed put
 	// on, or the issue reopened, after that merge). It is free again: PR
 	// stays 0 until a new PR takes it.
@@ -49,8 +58,11 @@ type Issue struct {
 	// Video: a video request (label gg:video), e.g. a demo script a tester
 	// wrote. An editor makes it in GlitchRecord; it is never code to fix, so
 	// cs never starts a session on it (glitchgrab #642 was triaged a feature).
-	Video  bool `json:"-"`
-	Labels []struct {
+	Video bool `json:"-"`
+	// Research: a usage study that only collects comments (label gg:research).
+	// A person picks features from it later, so cs never starts a session on it.
+	Research bool `json:"-"`
+	Labels   []struct {
 		Name string `json:"name"`
 	} `json:"labels"`
 }
@@ -58,13 +70,16 @@ type Issue struct {
 // Waits reports whether the issue can't be worked on yet: a follow-up whose
 // issue or PR isn't merged, or whose date hasn't come.
 func (is Issue) Waits() bool {
-	return is.Video || is.WaitsFor > 0 || time.Now().Before(is.NotBefore)
+	return is.Video || is.Research || is.WaitsFor > 0 || time.Now().Before(is.NotBefore)
 }
 
 // WaitReason says what a waiting issue waits for, for the picker.
 func (is Issue) WaitReason() string {
 	if is.Video {
 		return "video request, made in GlitchRecord"
+	}
+	if is.Research {
+		return "research notes, no work to start"
 	}
 	if is.WaitsFor > 0 {
 		return fmt.Sprintf("waits for %s#%d to merge", is.WaitsRepo, is.WaitsFor)
@@ -88,14 +103,22 @@ const qaFailedLabel = "qa:failed"
 // videoLabel marks a video request (Glitchgrab's report triage puts it on).
 const videoLabel = "gg:video"
 
-// isVideoRequest reports whether the issue carries videoLabel.
-func isVideoRequest(is Issue) bool {
+// researchLabel marks an issue that only collects usage findings.
+const researchLabel = "gg:research"
+
+// hasLabel reports whether the issue carries the label.
+func hasLabel(is Issue, name string) bool {
 	for _, l := range is.Labels {
-		if l.Name == videoLabel {
+		if l.Name == name {
 			return true
 		}
 	}
 	return false
+}
+
+// isVideoRequest reports whether the issue carries videoLabel.
+func isVideoRequest(is Issue) bool {
+	return hasLabel(is, videoLabel)
 }
 
 // ListOpenIssues returns the open issues of the GitHub repo in dir, oldest
@@ -104,12 +127,21 @@ func isVideoRequest(is Issue) bool {
 func ListOpenIssues(dir string) ([]Issue, error) {
 	prs := make(chan map[int]prRef, 1)
 	openPRs := make(chan map[int]bool, 1)
-	go func() { m, open := openPRIssues(dir); prs <- m; openPRs <- open }()
-	cmd := exec.Command("gh", "issue", "list", "--state", "open", "--limit", issueListLimit,
+	gather := make(chan prChoice, 1)
+	go func() {
+		m, open, list := openPRIssues(dir)
+		prs <- m
+		openPRs <- open
+		pr, unclear := ChoosePR(list, ghLogin(dir), checkedOutBranch(dir))
+		gather <- prChoice{pr, unclear}
+	}()
+	cmd := GhCmd(dir, "issue", "list", "--state", "open", "--limit", issueListLimit,
 		"--json", "number,title,url,body,createdAt,labels")
-	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && strings.Contains(string(ee.Stderr), "has disabled issues") {
+			return nil, nil // origin has no issues (a fork): never fall back to upstream's
+		}
 		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
 			return nil, fmt.Errorf("gh issue list: %s", strings.TrimSpace(string(ee.Stderr)))
 		}
@@ -119,7 +151,7 @@ func ListOpenIssues(dir string) ([]Issue, error) {
 	if err := json.Unmarshal(out, &issues); err != nil {
 		return nil, fmt.Errorf("gh issue list: %w", err)
 	}
-	inPR, prOpen := <-prs, <-openPRs
+	inPR, prOpen, choice := <-prs, <-openPRs, <-gather
 	issueOpen := map[int]bool{}
 	for _, is := range issues {
 		issueOpen[is.Number] = true
@@ -144,8 +176,10 @@ func ListOpenIssues(dir string) ([]Issue, error) {
 	for i := range issues {
 		// Some titles are pasted with line breaks; one line keeps the list readable.
 		issues[i].Title = strings.Join(strings.Fields(issues[i].Title), " ")
+		issues[i].GatherPR, issues[i].PRUnclear = choice.pr, choice.unclear
 		issues[i].NotBefore = dueDate(issues[i].Title, issues[i].Body)
 		issues[i].Video = isVideoRequest(issues[i])
+		issues[i].Research = hasLabel(issues[i], researchLabel)
 		for _, r := range followUpOf(issues[i].Title) {
 			if r.repo == "" && (issueOpen[r.n] || prOpen[r.n]) || r.repo != "" && otherRepoOpen(dir, r.repo, r.n) {
 				issues[i].WaitsFor, issues[i].WaitsRepo = r.n, r.repo
@@ -219,6 +253,9 @@ func otherRepoOpen(dir, repo string, n int) bool {
 
 var githubRemoteRe = regexp.MustCompile(`github\.com[:/]([^/]+)/`)
 
+// GhCmd is gh run in dir against the origin repo (see git.GhCmd).
+func GhCmd(dir string, args ...string) *exec.Cmd { return git.GhCmd(dir, args...) }
+
 // githubOwner is the owner of dir's origin remote on GitHub, or "".
 func githubOwner(dir string) string {
 	out, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").Output()
@@ -287,9 +324,8 @@ type prRef struct {
 // no new label, and cs kept it as taken). Failed before the latest merge
 // (a re-fix merged since) → stays taken until testing says again.
 func qaFailedAfter(dir string, number int, mergedAt time.Time) bool {
-	cmd := exec.Command("gh", "api", fmt.Sprintf("repos/{owner}/{repo}/issues/%d/events?per_page=100", number),
+	cmd := GhCmd(dir, "api", fmt.Sprintf("repos/{owner}/{repo}/issues/%d/events?per_page=100", number),
 		"--jq", `[.[] | select(.event=="reopened" or (.event=="labeled" and .label.name=="`+qaFailedLabel+`")) | .created_at] | last // ""`)
-	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
 		return false
@@ -302,13 +338,13 @@ func qaFailedAfter(dir string, number int, mergedAt time.Time) bool {
 // empty: then no issue is treated as taken. PRs opened by bots (the GitHub
 // Claude app's own fix PRs) are marked: their issues are taken, but cs must
 // never gather issues on them (it once attached 14 to one). It also returns
-// the numbers of the open PRs.
-func openPRIssues(dir string) (map[int]prRef, map[int]bool) {
+// the numbers of the open PRs, and those PRs.
+func openPRIssues(dir string) (map[int]prRef, map[int]bool, []PRInfo) {
 	// Merged and open lists load at the same time; merged ones go in first,
 	// so an open PR closing the same issue wins below. An issue a merged PR
 	// lists but that is still open (reopened, or GitHub didn't close it) was
 	// worked on already: it is taken too (#944).
-	var merged, open []prInfo
+	var merged, open []PRInfo
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() { defer wg.Done(); merged = mergedPRs(dir) }()
@@ -316,29 +352,102 @@ func openPRIssues(dir string) (map[int]prRef, map[int]bool) {
 	wg.Wait()
 	m, openNums := map[int]prRef{}, map[int]bool{}
 	for _, pr := range open {
-		openNums[pr.number] = true
+		openNums[pr.Number] = true
 	}
-	for _, prs := range [][]prInfo{merged, open} {
+	for _, prs := range [][]PRInfo{merged, open} {
 		for _, pr := range prs {
-			for _, is := range pr.closes {
+			for _, is := range pr.Closes {
 				// The latest merge counts: a re-fix merged after a failed test.
 				if old, ok := m[is]; ok && old.merged && pr.merged && old.mergedAt.After(pr.mergedAt) {
 					continue
 				}
-				m[is] = prRef{number: pr.number, bot: pr.bot, merged: pr.merged, mergedAt: pr.mergedAt}
+				m[is] = prRef{number: pr.Number, bot: pr.Bot, merged: pr.merged, mergedAt: pr.mergedAt}
 			}
 		}
 	}
-	return m, openNums
+	return m, openNums, open
 }
 
-// prInfo is one PR from gh pr list.
-type prInfo struct {
-	number   int
-	bot      bool
+// PRInfo is one PR from gh pr list.
+type PRInfo struct {
+	Number   int
+	Bot      bool
+	Author   string
+	Head     string // its branch
 	merged   bool
 	mergedAt time.Time
-	closes   []int
+	Closes   []int
+}
+
+// prChoice is ChoosePR's answer for one project.
+type prChoice struct {
+	pr      int
+	unclear bool
+}
+
+// ChoosePR says which open PR a project's new issues go to, for the user
+// login on the checked-out branch. Issues once piled onto a teammate's stale
+// PR because the PR holding the most issues won (glitchgrab #766, 15 of them;
+// gai-tools #79), so counts play no part:
+//   - a lone human PR is it, if it is the user's;
+//   - of several, only the one PR that is the user's and from this branch.
+//
+// Anything else is pr 0 with unclear true when human PRs are open: nobody can
+// tell, so gai's question stays for the user. An unknown login never matches.
+func ChoosePR(open []PRInfo, login, branch string) (pr int, unclear bool) {
+	var human []PRInfo
+	for _, p := range open {
+		if !p.Bot {
+			human = append(human, p)
+		}
+	}
+	if len(human) == 0 {
+		return 0, false
+	}
+	mine := func(p PRInfo) bool { return login != "" && strings.EqualFold(p.Author, login) }
+	if len(human) == 1 {
+		if mine(human[0]) {
+			return human[0].Number, false
+		}
+		return 0, true
+	}
+	hits := 0
+	for _, p := range human {
+		if mine(p) && branch != "" && p.Head == branch {
+			pr = p.Number
+			hits++
+		}
+	}
+	if hits != 1 {
+		return 0, true
+	}
+	return pr, false
+}
+
+// lastLogin keeps the last answer: one gh blip must not turn every list
+// unclear and stall a project's batch.
+var lastLogin atomic.Value
+
+// ghLogin is the gh user, the last known one when gh fails, or "".
+func ghLogin(dir string) string {
+	cmd := exec.Command("gh", "api", "user", "--jq", ".login")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if login := strings.TrimSpace(string(out)); err == nil && login != "" {
+		lastLogin.Store(login)
+		return login
+	}
+	login, _ := lastLogin.Load().(string)
+	return login
+}
+
+// checkedOutBranch is dir's current branch, or "" (detached, not a repo).
+func checkedOutBranch(dir string) string {
+	out, err := exec.Command("git", "-C", dir, "branch", "--show-current").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // mergedCache keeps each repo's merged PRs: listing 300 of them takes GitHub
@@ -351,7 +460,7 @@ var (
 )
 
 type mergedEntry struct {
-	prs map[int]prInfo
+	prs map[int]PRInfo
 	at  time.Time // last full list
 }
 
@@ -360,7 +469,7 @@ const (
 	mergedFullEvery = 30 * time.Minute
 )
 
-func mergedPRs(dir string) []prInfo {
+func mergedPRs(dir string) []PRInfo {
 	mergedMu.Lock()
 	e, ok := mergedCache[dir]
 	mergedMu.Unlock()
@@ -377,16 +486,16 @@ func mergedPRs(dir string) []prInfo {
 		return nil
 	}
 	if full {
-		e = mergedEntry{prs: map[int]prInfo{}, at: time.Now()}
+		e = mergedEntry{prs: map[int]PRInfo{}, at: time.Now()}
 	} else {
-		cp := make(map[int]prInfo, len(e.prs)+len(prs))
+		cp := make(map[int]PRInfo, len(e.prs)+len(prs))
 		for k, v := range e.prs {
 			cp[k] = v
 		}
 		e.prs = cp
 	}
 	for _, pr := range prs {
-		e.prs[pr.number] = pr
+		e.prs[pr.Number] = pr
 	}
 	mergedMu.Lock()
 	mergedCache[dir] = e
@@ -394,8 +503,8 @@ func mergedPRs(dir string) []prInfo {
 	return e.list()
 }
 
-func (e mergedEntry) list() []prInfo {
-	out := make([]prInfo, 0, len(e.prs))
+func (e mergedEntry) list() []PRInfo {
+	out := make([]PRInfo, 0, len(e.prs))
 	for _, pr := range e.prs {
 		out = append(out, pr)
 	}
@@ -403,10 +512,9 @@ func (e mergedEntry) list() []prInfo {
 }
 
 // listPRs reads up to limit PRs in state (open or merged).
-func listPRs(dir, state, limit string) ([]prInfo, error) {
-	cmd := exec.Command("gh", "pr", "list", "--state", state, "--limit", limit,
-		"--json", "number,closingIssuesReferences,author,mergedAt")
-	cmd.Dir = dir
+func listPRs(dir, state, limit string) ([]PRInfo, error) {
+	cmd := GhCmd(dir, "pr", "list", "--state", state, "--limit", limit,
+		"--json", "number,closingIssuesReferences,author,mergedAt,headRefName")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -414,6 +522,7 @@ func listPRs(dir, state, limit string) ([]prInfo, error) {
 	var prs []struct {
 		Number   int       `json:"number"`
 		MergedAt time.Time `json:"mergedAt"`
+		Head     string    `json:"headRefName"`
 		Closes   []struct {
 			Number int `json:"number"`
 		} `json:"closingIssuesReferences"`
@@ -425,12 +534,13 @@ func listPRs(dir, state, limit string) ([]prInfo, error) {
 	if err := json.Unmarshal(out, &prs); err != nil {
 		return nil, err
 	}
-	var res []prInfo
+	var res []PRInfo
 	for _, pr := range prs {
-		p := prInfo{number: pr.Number, merged: state == "merged", mergedAt: pr.MergedAt,
-			bot: pr.Author.IsBot || strings.HasPrefix(pr.Author.Login, "app/") || strings.HasSuffix(pr.Author.Login, "[bot]")}
+		p := PRInfo{Number: pr.Number, merged: state == "merged", mergedAt: pr.MergedAt,
+			Author: pr.Author.Login, Head: pr.Head,
+			Bot: pr.Author.IsBot || strings.HasPrefix(pr.Author.Login, "app/") || strings.HasSuffix(pr.Author.Login, "[bot]")}
 		for _, is := range pr.Closes {
-			p.closes = append(p.closes, is.Number)
+			p.Closes = append(p.Closes, is.Number)
 		}
 		res = append(res, p)
 	}
@@ -488,6 +598,28 @@ func QueueIssueSession(dir string, issue Issue) (string, error) {
 	_ = exec.Command("tmux", "set-option", "-t", name, "window-size", "latest").Run()
 	_ = exec.Command("tmux", "set-option", "-t", name, queuedOption, "1").Run()
 	return name, nil
+}
+
+// IssueClosed asks GitHub, right now, whether issue n is closed. The issue
+// list can be a minute old, and in the seconds after a PR merges its issues
+// still look open with no PR (practice-stack, 2026-11-14: 8 issues #3244 had
+// just closed were started again and piled onto a new PR #3254).
+func IssueClosed(dir string, n int) (bool, error) {
+	cmd := GhCmd(dir, "issue", "view", strconv.Itoa(n), "--json", "state", "--jq", ".state")
+	out, err := cmd.Output()
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(out)) != "OPEN", nil
+}
+
+// CloseQueuedIssue ends issue n's "queued" tile, if that's all it is.
+func CloseQueuedIssue(dir string, n int) {
+	name := IssueSessionName(dir, n)
+	out, _ := exec.Command("tmux", "show-options", "-v", "-t", name, queuedOption).Output()
+	if strings.TrimSpace(string(out)) == "1" {
+		_ = exec.Command("tmux", "kill-session", "-t", "="+name).Run()
+	}
 }
 
 // CloseStaleQueuedIssues ends "queued" issue sessions left by an earlier cs
@@ -602,6 +734,14 @@ func PressEnter(name string) error {
 // wrapped lines joined.
 func PaneScreen(name string) string {
 	out, _ := exec.Command("tmux", "capture-pane", "-p", "-J", "-t", name).Output()
+	return string(out)
+}
+
+// PaneHistory returns a tmux session's screen and all its scroll-back as
+// plain text, with wrapped lines joined. A dead gai pane's error can sit in
+// the scroll-back: see DeadPaneLines.
+func PaneHistory(name string) string {
+	out, _ := exec.Command("tmux", "capture-pane", "-p", "-J", "-S", "-", "-t", name).Output()
 	return string(out)
 }
 

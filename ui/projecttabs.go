@@ -29,7 +29,8 @@ var (
 
 // ProjectTabs renders the row of open projects across the top of the screen,
 // like editor tabs. ←/→ or a click move between them; "+ add project" on the
-// right opens the folder chooser.
+// right opens the folder chooser. Quiet projects stay open but sit behind a
+// "⋯ N more" chip.
 type ProjectTabs struct {
 	projects []string
 	active   int
@@ -37,15 +38,20 @@ type ProjectTabs struct {
 	needs    map[string]int
 	free     map[string]int // auto issue loop: free session slots to fill
 	checks   map[string]TabChecks
-	width    int
+	// quiet projects keep their tab out of the row (see Shown).
+	quiet map[string]bool
+	width int
 	// spans holds each tab's [start, end) column from the last render, and
 	// addStart the column where the "+ add project" button begins.
 	spans    [][2]int
 	addStart int
+	// moreSpan is the "⋯ N more" chip's [start, end) column; empty when no
+	// tab is hidden.
+	moreSpan [2]int
 }
 
 func NewProjectTabs() *ProjectTabs {
-	return &ProjectTabs{counts: map[string]int{}, needs: map[string]int{}, free: map[string]int{}, checks: map[string]TabChecks{}}
+	return &ProjectTabs{counts: map[string]int{}, needs: map[string]int{}, free: map[string]int{}, checks: map[string]TabChecks{}, quiet: map[string]bool{}}
 }
 
 func (t *ProjectTabs) SetWidth(width int) { t.width = width }
@@ -87,6 +93,38 @@ func (t *ProjectTabs) SetFree(project string, n int) { t.free[project] = n }
 // SetCount sets the number of agents shown next to a project's name.
 func (t *ProjectTabs) SetCount(project string, n int) { t.counts[project] = n }
 
+// SetQuiet sets the projects with nothing going on, which leave the row.
+func (t *ProjectTabs) SetQuiet(quiet map[string]bool) { t.quiet = quiet }
+
+// Shown reports whether tab i is in the row. The selected tab and any project
+// with a session are never hidden, so the row follows sessions at once.
+func (t *ProjectTabs) Shown(i int) bool {
+	p := t.projects[i]
+	return i == t.active || !t.quiet[p] || t.counts[p] > 0 || t.needs[p] > 0 || t.free[p] > 0
+}
+
+// ShownProjects returns the projects in the row, in tab order.
+func (t *ProjectTabs) ShownProjects() []string {
+	var out []string
+	for i, p := range t.projects {
+		if t.Shown(i) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// HiddenProjects returns the projects behind the "⋯ N more" chip.
+func (t *ProjectTabs) HiddenProjects() []string {
+	var out []string
+	for i, p := range t.projects {
+		if !t.Shown(i) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func (t *ProjectTabs) Projects() []string {
 	if t == nil {
 		return nil
@@ -102,24 +140,29 @@ func (t *ProjectTabs) Active() string {
 	return t.projects[t.active]
 }
 
-// Next selects the tab to the right (wrapping) and returns its project.
-func (t *ProjectTabs) Next() string {
-	if len(t.projects) > 0 {
-		t.active = (t.active + 1) % len(t.projects)
+// step moves the selection to the next shown tab in dir (wrapping).
+func (t *ProjectTabs) step(dir int) string {
+	n := len(t.projects)
+	for i := 1; i < n; i++ {
+		if j := ((t.active+dir*i)%n + n) % n; t.Shown(j) {
+			t.active = j
+			break
+		}
 	}
 	return t.Active()
 }
 
-// Prev selects the tab to the left (wrapping) and returns its project.
-func (t *ProjectTabs) Prev() string {
-	if len(t.projects) > 0 {
-		t.active = (t.active - 1 + len(t.projects)) % len(t.projects)
-	}
-	return t.Active()
-}
+// Next selects the shown tab to the right (wrapping) and returns its project.
+func (t *ProjectTabs) Next() string { return t.step(1) }
+
+// Prev selects the shown tab to the left (wrapping) and returns its project.
+func (t *ProjectTabs) Prev() string { return t.step(-1) }
 
 // HitAddProject is returned by HitTest for a click on the "+ add project" button.
 const HitAddProject = -2
+
+// HitMore is returned by HitTest for a click on the "⋯ N more" chip.
+const HitMore = -3
 
 // Select makes tab i active and returns its project.
 func (t *ProjectTabs) Select(i int) string {
@@ -130,13 +173,16 @@ func (t *ProjectTabs) Select(i int) string {
 }
 
 // HitTest maps a click at column x on the tab row to a tab index,
-// HitAddProject, or -1 for empty space. It uses the spans from the last render.
+// HitAddProject, HitMore, or -1 for empty space. It uses the spans from the last render.
 func (t *ProjectTabs) HitTest(x int) int {
 	if t.spans == nil {
 		return -1 // not rendered yet
 	}
 	if x >= t.addStart {
 		return HitAddProject
+	}
+	if x >= t.moreSpan[0] && x < t.moreSpan[1] {
+		return HitMore
 	}
 	for i, sp := range t.spans {
 		if x >= sp[0] && x < sp[1] {
@@ -151,8 +197,17 @@ func (t *ProjectTabs) String() string {
 	addButton := projectTabAddStyle.Render("+ add project (⌃Space A)")
 
 	names := uniqueNames(t.projects)
-	labels := make([]string, len(t.projects))
+	var labels []string
+	var shown []int // labels[k] is tab shown[k]
+	activeAt := 0
 	for i, p := range t.projects {
+		if !t.Shown(i) {
+			continue
+		}
+		if i == t.active {
+			activeAt = len(shown)
+		}
+		shown = append(shown, i)
 		label := names[i]
 		if n := t.counts[p]; n > 0 {
 			label += fmt.Sprintf(" (%d)", n)
@@ -169,21 +224,26 @@ func (t *ProjectTabs) String() string {
 		}
 		c, hasChecks := t.checks[p]
 		if !hasChecks {
-			labels[i] = base.Render(label)
+			labels = append(labels, base.Render(label))
 			continue
 		}
 		// The chip keeps the tab's background, so the active tab stays one block.
 		plain := base.UnsetPadding()
-		labels[i] = plain.Render(" "+label) +
-			plain.Foreground(lipgloss.Color(c.Color)).Bold(true).Render(" "+c.Text) + plain.Render(" ")
+		labels = append(labels, plain.Render(" "+label)+
+			plain.Foreground(lipgloss.Color(c.Color)).Bold(true).Render(" "+c.Text)+plain.Render(" "))
+	}
+
+	more := ""
+	if n := len(t.projects) - len(shown); n > 0 {
+		more = projectTabAddStyle.Render(fmt.Sprintf("⋯ %d more", n))
 	}
 
 	// Keep the active tab on screen when the row is too wide by dropping tabs
 	// from the left.
 	sep := projectTabSepStyle.Render("│")
-	reserved := lipgloss.Width(addButton) + runewidth.StringWidth(hint)
+	reserved := lipgloss.Width(addButton) + runewidth.StringWidth(hint) + lipgloss.Width(more)
 	start := 0
-	for start < t.active && rowWidth(labels[start:], sep)+2 > t.width-reserved {
+	for start < activeAt && rowWidth(labels[start:], sep)+2 > t.width-reserved {
 		start++
 	}
 
@@ -201,9 +261,15 @@ func (t *ProjectTabs) String() string {
 			col += lipgloss.Width(sep)
 		}
 		w := lipgloss.Width(labels[i])
-		t.spans[i] = [2]int{col, col + w}
+		t.spans[shown[i]] = [2]int{col, col + w}
 		row.WriteString(labels[i])
 		col += w
+	}
+	t.moreSpan = [2]int{}
+	if more != "" {
+		t.moreSpan = [2]int{col, col + lipgloss.Width(more)}
+		row.WriteString(more)
+		col += lipgloss.Width(more)
 	}
 
 	gap := t.width - col - reserved

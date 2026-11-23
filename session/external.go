@@ -175,11 +175,22 @@ func ListExternalSessions() ([]*ExternalSession, map[string]string, error) {
 	agentPanes := map[int]string{}
 	agentStatus := map[string]string{}
 
+	// Every pane's process, and the tmux server's pid: a Claude whose parent
+	// is the server but sits in no pane is a closed tile's leftover (below).
+	inPane := map[int]bool{}
+	server := 0
 	if out, err := exec.Command("tmux", "list-panes", "-a", "-F",
-		"#{session_name}\t#{session_path}\t#{session_attached}\t#{pane_pid}").Output(); err == nil {
+		"#{session_name}\t#{session_path}\t#{session_attached}\t#{pane_pid}\t#{pid}").Output(); err == nil {
 		seen := map[string]bool{}
 		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 			parts := strings.Split(line, "\t")
+			if len(parts) == 5 {
+				server, _ = strconv.Atoi(parts[4])
+				if pid, err := strconv.Atoi(parts[3]); err == nil {
+					inPane[pid] = true
+				}
+				parts = parts[:4]
+			}
 			if len(parts) == 4 && strings.HasPrefix(parts[0], AttachPrefix) {
 				wrappers[parts[0]] = true
 			}
@@ -236,6 +247,16 @@ func ListExternalSessions() ([]*ExternalSession, map[string]string, error) {
 				e.Label, e.Status, e.SessionID = a.Name, a.Status, a.SessionID
 				continue
 			}
+		}
+		if a.Kind != "background" && server > 0 && parents.of(a.Pid) == server && !inPane[a.Pid] {
+			// A closed tile's Claude that outlived its pane: tmux started it,
+			// but no pane holds it, so no window shows it and nothing can type
+			// into it. KillSession's SIGKILL normally ends it; one stuck in the
+			// kernel (#3253's, 2026-11-14) kept its session file and came back
+			// as a "view only" tile that W refused to close. Hide it. Not
+			// killed here: a tile started between the pane list and this
+			// check looks the same for one refresh.
+			continue
 		}
 		e := &ExternalSession{Kind: KindTerminal, Name: fmt.Sprintf("pid-%d", a.Pid), Path: a.Cwd,
 			Label: a.Name, Status: a.Status, SessionID: a.SessionID, Pid: a.Pid}
@@ -711,6 +732,17 @@ func (e *ExternalSession) Attach() (chan struct{}, error) {
 	if e.Kind != KindTmux {
 		return nil, fmt.Errorf("not a tmux session")
 	}
+	// A tile fit (resize-window) pins the window to window-size manual, so full
+	// screen would keep the tile's size with dots around it. Follow this
+	// terminal instead, and give the tile its size back on detach.
+	target := "=" + e.Name + ":"
+	size, _ := exec.Command("tmux", "display-message", "-p", "-t", target, "#{window_width} #{window_height}").Output()
+	_ = exec.Command("tmux", "set-option", "-w", "-t", target, "window-size", "latest").Run()
+	refit := func() {
+		if w, h, ok := strings.Cut(strings.TrimSpace(string(size)), " "); ok {
+			_ = exec.Command("tmux", "resize-window", "-t", target, "-x", w, "-y", h).Run()
+		}
+	}
 	t := tmux.NewExternalTmuxSession(e.Name)
 	if err := t.Restore(); err != nil {
 		return nil, err
@@ -718,12 +750,14 @@ func (e *ExternalSession) Attach() (chan struct{}, error) {
 	ch, err := t.Attach()
 	if err != nil {
 		t.ReleaseClient()
+		refit()
 		return nil, err
 	}
 	done := make(chan struct{})
 	go func() {
 		<-ch
 		t.ReleaseClient()
+		refit()
 		close(done)
 	}()
 	return done, nil

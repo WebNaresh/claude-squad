@@ -99,6 +99,8 @@ const (
 	stateCommit
 	// stateIssuePicker is the state when the ⌥N issue picker is displayed.
 	stateIssuePicker
+	// stateTabPicker is the state when the hidden projects list is displayed.
+	stateTabPicker
 )
 
 type home struct {
@@ -162,7 +164,10 @@ type home struct {
 	screenWidth, screenHeight int
 	// repoRoots caches the git root of each external session's folder;
 	// sessionRoots are the projects that currently have a running session
-	repoRoots    map[string]string
+	repoRoots map[string]string
+	// tmuxServer is the tmux server live-tiles.json was last saved for
+	// (app/rebootrestore.go).
+	tmuxServer   string
 	sessionRoots []string
 	// updater rebuilds cs when its source changes; nil when not run via the launcher
 	updater *updater
@@ -199,6 +204,9 @@ type home struct {
 	// gridRenderKey/gridRendered cache the drawn grid
 	gridRenderKey string
 	gridRendered  string
+	// autoBtnSpan is where the strip's "■ stop" / "▶ start" button sits
+	// (screen columns, end exclusive; empty when cut off)
+	autoBtnSpan [2]int
 	// gridKeys names the sessions gridTiles shows, in order; a different
 	// list (another tab) is redrawn from tileCache at once
 	gridKeys string
@@ -206,6 +214,11 @@ type home struct {
 	// issues' sessions one after another
 	issuePicker *ui.IssuePicker
 	issueCache  map[string][]session.Issue // last issue list per project, shown at once next time
+	// tabPicker lists the hidden projects; quietAt is when quiet tabs were
+	// last worked out and tabLastUsed when Claude last ran in each project.
+	tabPicker   *tabPicker
+	quietAt     time.Time
+	tabLastUsed map[string]time.Time
 	issueQueue  []queuedIssue
 	issueJob    *issueJob
 	// needsSeen holds the sessions known to wait on the user (to spot new
@@ -219,8 +232,12 @@ type home struct {
 	needsSeen      map[string]bool
 	questionJumped map[string]bool
 	lastKey        time.Time
+	previewWake    chan struct{} // cuts the preview tick's idle wait short (markActive)
 	lastPick       time.Time
 	gridMarkdown   map[string]*ui.MarkdownCache
+	// viewScroll: how many lines a view-only tile is scrolled back from its
+	// bottom, by session ID. The wheel moves it (viewonlyscroll.go).
+	viewScroll map[string]viewPos
 	// paneWidth is the width of the session pane / grid area
 	paneWidth int
 	// leftWidth is the width of the Source Control + dock column. dockNames
@@ -232,8 +249,10 @@ type home struct {
 	dockHidden bool
 	dockShots  map[string]dockCapturedMsg
 	// servers are the listening ports, with the tile that started each (servers.go)
-	servers        []session.Server
-	serversFocused bool
+	servers            []session.Server
+	serversBlocked     []int  // ports the dock terminal found in use (servers.go)
+	serversBlockedDock string // the dock serversBlocked was read from
+	serversFocused     bool
 	// Auto issue loop (autoissues.go): autoDeclined is how many sessions ran
 	// when its offer was declined, autoFetched when the issue list was last
 	// loaded for it, autoSaid the last message shown, autoPrompt the project
@@ -294,6 +313,7 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 
 	h := &home{
 		ctx:          ctx,
+		previewWake:  make(chan struct{}, 1),
 		spinner:      spinner.New(spinner.WithSpinner(spinner.MiniDot)),
 		menu:         ui.NewMenu(),
 		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
@@ -316,6 +336,7 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 	h.scLoading = map[string]time.Time{}
 	h.scCache = map[string]scStatusMsg{}
 	h.gridMarkdown = map[string]*ui.MarkdownCache{}
+	h.viewScroll = map[string]viewPos{}
 	h.startedAt = time.Now()
 	var focus string
 	h.savedFrame, h.savedW, h.savedH, focus, h.restoredRow = loadFrame()
@@ -398,6 +419,8 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		}
 	}
 	h.projectTabs.SetProjects(appConfig.OpenProjects, appConfig.ActiveProject)
+	// Before the first frame: a self-update must not redraw a changed row.
+	h.applyQuietTabs(readQuietTabs(appConfig.OpenProjects, nil, appConfig.ProjectAdded, time.Now()))
 	h.list.SetProject(h.projectTabs.Active())
 
 	logEvent("start pid=%d program=%q tabs=%v active=%s mouse=%v agents=%d",
@@ -476,7 +499,7 @@ func (m *home) Init() tea.Cmd {
 		scTick(),
 		keyboardCheck(),
 		usageTick(),
-		refreshServers(),
+		refreshServers(""),
 		serversTick(serversEvery),
 		autoTick(),
 	)
@@ -490,8 +513,44 @@ func (m *home) previewInterval() time.Duration {
 		return 50 * time.Millisecond // typing: show each key quickly
 	case since < 3*time.Second:
 		return 100 * time.Millisecond
+	case since < previewIdleAfter:
+		return 400 * time.Millisecond
 	}
-	return 400 * time.Millisecond
+	// Nobody at the keyboard: each tick redraws the whole screen (~5ms),
+	// and at 400ms that alone kept cs at ~11% CPU all day. markActive wakes
+	// the wait early, so the first key after a pause still echoes at once.
+	return time.Second
+}
+
+// previewIdleAfter is how long without a key or scroll before the preview
+// tick slows to once a second.
+const previewIdleAfter = 10 * time.Second
+
+// markActive records a key, scroll, click, drag or resize: the preview tick
+// speeds up, and a tick sleeping through the 1s idle wait wakes now. Only
+// that idle wait is cut short: waking on every event would turn a trackpad
+// burst (hundreds of wheel events) into hundreds of grid captures.
+func (m *home) markActive() {
+	now := timeNow()
+	wasIdle := now.Sub(m.lastKey) >= previewIdleAfter
+	m.lastKey = now
+	if !wasIdle {
+		return
+	}
+	select {
+	case m.previewWake <- struct{}{}:
+	default: // a wake is already pending
+	}
+}
+
+// previewWait sleeps until the next preview tick, or until markActive.
+func previewWait(interval time.Duration, wake <-chan struct{}) {
+	t := time.NewTimer(interval)
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-wake:
+	}
 }
 
 // refreshInterval is how often session status is refreshed (claude agents,
@@ -555,6 +614,7 @@ func (m *home) restartIfReady() tea.Cmd {
 
 func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	defer watchUpdate(msg)() // lag watchdog (watchdog.go)
+	countMsg(msg)
 	switch msg := msg.(type) {
 	case hideErrMsg:
 		m.errBox.Clear()
@@ -573,12 +633,13 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case previewTickMsg:
 		cmd := m.instanceChanged()
 		interval := m.previewInterval()
+		wake := m.previewWake
 		return m, tea.Batch(
 			cmd,
 			m.refreshGrid(),
 			m.refreshDock(),
 			func() tea.Msg {
-				time.Sleep(interval)
+				previewWait(interval, wake)
 				return previewTickMsg{}
 			},
 		)
@@ -617,7 +678,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, serversTick(serversEvery)
 		}
 		m.serversLoading = true
-		return m, tea.Batch(refreshServers(), serversTick(serversEvery))
+		return m, tea.Batch(refreshServers(m.dockName()), serversTick(serversEvery))
 	case serversMsg:
 		m.serversLoading = false
 		return m, m.applyServers(msg)
@@ -650,6 +711,9 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tabChecksMsg:
 		m.applyTabChecks(msg)
+		return m, nil
+	case quietTabsMsg:
+		m.applyQuietTabs(msg)
 		return m, nil
 	case unlinkPollMsg:
 		return m, pollUnlink(msg)
@@ -752,6 +816,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			focus,
 			tickUpdateMetadataCmd(m.snapshotActiveInstances(), m.list.GetSelectedInstance(), m.refreshInterval()),
 			m.restartIfReady(),
+			m.noteLiveTiles(m.list.ExternalSessions()),
 		)
 	case sessionMovedMsg:
 		m.setExternalSessions(msg.sessions)
@@ -780,6 +845,9 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			logEvent("mouse: first event from the terminal this run (%s)", tea.MouseEvent(msg).String())
 		}
 		m.lastMouse = time.Now()
+		if msg.Action == tea.MouseActionPress {
+			m.markActive() // a click after a pause: show the clicked tile now, not up to 1s later
+		}
 		// Clicks on the project tab row: switch tab or add a project.
 		// Clicks on the status bar (the last row).
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft && msg.Y == m.screenHeight-1 && m.state == stateDefault {
@@ -787,14 +855,23 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 		}
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft && msg.Y == 1 && m.state == stateDefault &&
+			msg.X >= m.autoBtnSpan[0] && msg.X < m.autoBtnSpan[1] {
+			return m, m.clickAutoButton()
+		}
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft && msg.Y == 0 && m.state == stateDefault {
 			switch hit := m.projectTabs.HitTest(msg.X); {
 			case hit == ui.HitAddProject:
 				return m, chooseProjectCmd
+			case hit == ui.HitMore:
+				return m, m.openTabPicker()
 			case hit >= 0:
 				return m, m.switchProject(m.projectTabs.Select(hit))
 			}
 			return m, nil
+		}
+		if m.state == stateTabPicker {
+			return m, m.handleTabPickerMouse(msg)
 		}
 		if cmd, ok := m.handleRecentMouse(msg); ok {
 			return m, cmd
@@ -843,6 +920,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKeyPress(msg)
 	case tea.WindowSizeMsg:
 		logEvent("window %dx%d", msg.Width, msg.Height)
+		m.markActive() // refit and redraw the tiles at the new size at once
 		m.updateHandleWindowSizeEvent(msg)
 		return m, nil
 	case error:
@@ -958,7 +1036,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		logEvent("dropped a split mouse event (%d chars)", len(msg.Runes))
 		return m, nil
 	}
-	m.lastKey = time.Now()
+	m.markActive()
 	m.sel.shown = false // a key press clears the selection highlight
 	// Keys typed into a session are in keys.log already; describing the full
 	// state for each of them (hundreds a second when scrolling) costs CPU.
@@ -992,6 +1070,9 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	}
 	if m.state == stateIssuePicker {
 		return m, m.handleIssuePickerKey(msg)
+	}
+	if m.state == stateTabPicker {
+		return m, m.handleTabPickerKey(msg)
 	}
 	if m.serversFocused && m.state == stateDefault {
 		return m, m.handleServersKey(msg)
@@ -2055,6 +2136,7 @@ func (m *home) View() string {
 		return m.lastView
 	}
 	m.skipRender = false
+	m.autoBtnSpan = [2]int{} // set again when the strip is drawn
 	started := time.Now()
 	done := watchBegin("View")
 	defer func() {
@@ -2128,6 +2210,8 @@ func (m *home) view() string {
 		return m.placeCentered(m.textOverlay.Render(), mainView)
 	} else if m.state == stateIssuePicker && m.issuePicker != nil {
 		return m.placeCentered(m.issuePicker.Render(), mainView)
+	} else if m.state == stateTabPicker && m.tabPicker != nil {
+		return m.placeCentered(m.tabPicker.render(), mainView)
 	} else if m.state == stateCommit && m.commitOverlay != nil {
 		return m.placeCentered(m.commitOverlay.Render(), mainView)
 	} else if m.state == stateConfirm {

@@ -78,6 +78,7 @@ func (m *home) newIssuePicker(project string) {
 func (m *home) newIssuePickerTicking(project string, tick int, note string) {
 	m.issuePicker = ui.NewIssuePicker(project, projectNames(m.projectTabs.Projects())[project])
 	m.issuePicker.TickLimit, m.issuePicker.Auto, m.issuePicker.AutoOn = tick, note, m.autoOn(project)
+	showLimits(m.issuePicker)
 	m.issuePicker.SetSize(m.screenWidth, m.screenHeight)
 	m.issuePicker.SetSkipped(readSkipped(project))
 	m.issuePicker.NewestFirst = readPrefs(project).NewestFirst
@@ -114,6 +115,7 @@ func readIssueCache(project string) ([]session.Issue, bool) {
 		out[i] = ci.Issue
 		out[i].PR, out[i].PRBot, out[i].PRMerged, out[i].QAFailed, out[i].WaitsFor = ci.PR, ci.PRBot, ci.PRMerged, ci.QAFailed, ci.WaitsFor
 		out[i].NotBefore, out[i].WaitsRepo = ci.NotBefore, ci.WaitsRepo
+		out[i].GatherPR, out[i].PRUnclear = ci.GatherPR, ci.PRUnclear
 	}
 	return out, true
 }
@@ -125,7 +127,7 @@ func writeIssueCache(project string, issues []session.Issue) {
 	}
 	c := make([]cachedIssue, len(issues))
 	for i, is := range issues {
-		c[i] = cachedIssue{is, is.PR, is.PRBot, is.PRMerged, is.QAFailed, is.WaitsFor, is.NotBefore, is.WaitsRepo}
+		c[i] = cachedIssue{is, is.PR, is.PRBot, is.PRMerged, is.QAFailed, is.WaitsFor, is.NotBefore, is.WaitsRepo, is.GatherPR, is.PRUnclear}
 	}
 	if data, err := json.Marshal(c); err == nil {
 		_ = os.WriteFile(f, data, 0o644)
@@ -206,6 +208,8 @@ type cachedIssue struct {
 	WaitsFor  int       `json:"waits_for,omitempty"`
 	NotBefore time.Time `json:"not_before,omitzero"`
 	WaitsRepo string    `json:"waits_repo,omitempty"`
+	GatherPR  int       `json:"gather_pr,omitempty"`
+	PRUnclear bool      `json:"pr_unclear,omitempty"`
 }
 
 // busyIssues returns the issue numbers that already have a session in project.
@@ -232,7 +236,7 @@ func (m *home) handleIssuePickerKey(msg tea.KeyMsg) tea.Cmd {
 	p := m.issuePicker
 	switch msg.String() {
 	case "left", "right", "alt+left", "alt+right", "alt+b", "alt+f":
-		projects := m.projectTabs.Projects()
+		projects := m.projectTabs.ShownProjects()
 		i := indexOf(projects, p.Project)
 		if strings.HasSuffix(msg.String(), "left") || msg.String() == "alt+b" {
 			i = (i - 1 + len(projects)) % len(projects)
@@ -268,6 +272,20 @@ func (m *home) handleIssuePickerKey(msg tea.KeyMsg) tea.Cmd {
 	if msg.String() == "a" {
 		m.toggleAuto(p.Project)
 		p.AutoOn = m.autoOn(p.Project)
+		return nil
+	}
+	switch msg.String() {
+	case "g":
+		p.EditAll = !p.EditAll
+		return nil
+	case "+", "=", "-":
+		delta := 1
+		if msg.String() == "-" {
+			delta = -1
+		}
+		if err := m.stepLimit(p, delta); err != nil {
+			return m.handleError(err)
+		}
 		return nil
 	}
 	if msg.String() == "s" && !p.Loading {
@@ -340,9 +358,9 @@ func (m *home) stepIssues() tea.Cmd {
 	case time.Since(j.started) > issueJobTimeout:
 		m.issueJob = nil
 		return tea.Batch(m.handleError(fmt.Errorf("issue #%d is taking long; it stays in its session, moving on", j.issue.Number)), m.issueTick(0))
-	case strings.HasPrefix(line, "#") || strings.HasPrefix(line, "▶"):
-		// gai's "Multiple open PRs — select one" list (its last line is a
-		// list row): pick the PR this project's issues go to.
+	case gaiListLine(line):
+		// gai's "Multiple open PRs — select one" list: pick the PR this
+		// project's issues go to.
 		if j.answered != "pr" {
 			if cmd := m.pickPR(j); cmd != nil {
 				return tea.Batch(cmd, m.issueTick(time.Second))
@@ -375,7 +393,8 @@ func (m *home) claudeRunningIn(name string) bool {
 // isGaiPrompt reports whether a gai issue screen line waits for an answer
 // whose default (Enter) is right for an unattended run.
 func isGaiPrompt(line string) bool {
-	return strings.Contains(line, "[Y/n]") || strings.HasPrefix(line, "Extra instructions for Claude") ||
+	// [y/N]: gai on someone else's PR, where Enter means leave its text alone.
+	return strings.Contains(line, "[Y/n]") || strings.Contains(line, "[y/N]") || strings.HasPrefix(line, "Extra instructions for Claude") ||
 		// On main, gai asks for the PR's branch: Enter takes its default, dev,
 		// cut from main (a batch can now start on main; glitchgrab #585 sat here).
 		(strings.HasPrefix(line, "Branch name [") && strings.Contains(line, "(n to abort)"))
@@ -391,17 +410,30 @@ func (m *home) moreQueuedIn(project string) bool {
 	return false
 }
 
-// prRowRe matches a row of gai's PR list: "  ▶ #2305: title [3 issues]".
+// prRowRe matches a row of gai's PR list:
+// "  ▶ #2305: @login · dev · 2026-11-02 · 3 issues · title".
 var prRowRe = regexp.MustCompile(`^\s*(▶)?\s*#(\d+):`)
 
+// gaiListLine reports whether a pane's last line can be the bottom of gai's PR
+// list: a "#N:" row, the cursor row, or the "Create a new PR" row gai always
+// ends it with. Callers confirm with gaiAsksPR.
+func gaiListLine(line string) bool {
+	return strings.HasPrefix(line, "#") || strings.HasPrefix(line, "▶") || line == "Create a new PR"
+}
+
+// gaiAsksPR reports whether gai's PR question is on screen: several PRs, or
+// a lone PR that is someone else's (it stays for the user: no target matches).
+func gaiAsksPR(screen string) bool {
+	return strings.Contains(screen, "Multiple open PRs") || strings.Contains(screen, "only open PR is someone else's")
+}
+
 // pickPR answers gai's "Multiple open PRs — select one" for an issue job:
-// the PR this project's auto issues went to before (the open PR with the
-// most of its issues, under the limit). It moves gai's cursor there and
-// presses Enter. With no such PR in the list it leaves the question for the
-// user (the tile waits, the job times out and the queue moves on).
+// the PR session.ChoosePR settled on, if it has room. It moves gai's cursor
+// there and presses Enter. With no such PR in the list it leaves the question
+// for the user (the tile waits, the job times out and the queue moves on).
 func (m *home) pickPR(j *issueJob) tea.Cmd {
 	screen := session.PaneScreen(j.name)
-	if !strings.Contains(screen, "Multiple open PRs") {
+	if !gaiAsksPR(screen) {
 		return nil
 	}
 	target := 0

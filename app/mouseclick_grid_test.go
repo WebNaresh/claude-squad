@@ -12,7 +12,7 @@ import (
 func TestHitGridSkipsSourceControl(t *testing.T) {
 	tiles := []ui.GridTile{{Title: "one", Content: "a1\na2"}, {Title: "two", Content: "b1\nb2"}}
 	m := &home{gridTiles: tiles, paneWidth: 100, contentHeight: 10, screenWidth: 130}
-	grid := strings.Split(ui.RenderGrid(tiles, 0, 100, 10), "\n")
+	grid := strings.Split(ui.RenderGrid(tiles, 0, 100, 10, 0), "\n")
 	sc := strings.Repeat(" ", 30)
 	lines := []string{"tabs", ""}
 	for _, g := range grid {

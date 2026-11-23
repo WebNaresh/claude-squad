@@ -2,9 +2,6 @@ package app
 
 import (
 	"claude-squad/session"
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -43,23 +40,133 @@ func limitReset(screen string, now time.Time) (time.Time, string, bool) {
 			continue
 		}
 		m := limitRe.FindStringSubmatch(strings.ToLower(notice))
-		h, _ := strconv.Atoi(m[1])
-		min := 0
-		if m[2] != "" {
-			min, _ = strconv.Atoi(m[2])
-		}
-		if m[3] == "pm" && h != 12 {
-			h += 12
-		} else if m[3] == "am" && h == 12 {
-			h = 0
-		}
-		at := time.Date(now.Year(), now.Month(), now.Day(), h, min, 0, 0, now.Location())
-		if now.Sub(at) > 12*time.Hour {
-			at = at.AddDate(0, 0, 1)
-		}
+		at := resetTime(m[1], m[2], m[3], now)
 		return at, notice, true
 	}
 	return time.Time{}, "", false
+}
+
+// resetTime turns the hour, minutes and am/pm of a limit notice into a time.
+// A time already passed by more than 12 hours means tomorrow.
+func resetTime(hour, minute, ampm string, now time.Time) time.Time {
+	h, _ := strconv.Atoi(hour)
+	min := 0
+	if minute != "" {
+		min, _ = strconv.Atoi(minute)
+	}
+	if ampm == "pm" && h != 12 {
+		h += 12
+	} else if ampm == "am" && h == 12 {
+		h = 0
+	}
+	at := time.Date(now.Year(), now.Month(), now.Day(), h, min, 0, 0, now.Location())
+	if now.Sub(at) > 12*time.Hour {
+		at = at.AddDate(0, 0, 1)
+	}
+	return at
+}
+
+// Since 2026-11 Claude can finish its turn at the limit ("wrap-up") instead of
+// printing a "hit your limit" line, and tells the user to say continue. The
+// only sign is the footer below the input box, which wraps in a narrow tile:
+// "⚠ Usage limit reached · wrapping up · limit resets 3:20pm · clau.de/wrap-up".
+var wrapUpRe = regexp.MustCompile(`usage limit reached[^⏵]*?limit resets (\d{1,2})(?::(\d{2}))?\s*([ap]m)`)
+
+// footerBelowBox returns the lines below Claude's input box, joined.
+func footerBelowBox(screen string) string {
+	lines := strings.Split(screen, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "❯") {
+			var footer []string
+			for _, l := range lines[i+1:] {
+				footer = append(footer, strings.TrimSpace(l))
+			}
+			return strings.ToLower(strings.Join(footer, " "))
+		}
+	}
+	return ""
+}
+
+// wrapUpLimit reads the footer: when the limit shown there resets, and whether
+// the status line says this tile is finished ("✓ done · close session").
+func wrapUpLimit(screen string, now time.Time) (at time.Time, finished, ok bool) {
+	footer := footerBelowBox(screen)
+	m := wrapUpRe.FindStringSubmatch(footer)
+	if m == nil {
+		return time.Time{}, false, false
+	}
+	return resetTime(m[1], m[2], m[3], now), strings.Contains(footer, "✓ done"), true
+}
+
+// continuedAfterSwitch reads a tile's scroll-back: switched is whether the
+// account-switch notice is there, continued whether "continue" was sent below
+// it. Both come from the screen, so a cs restart can't repeat the continue.
+func continuedAfterSwitch(history string) (switched, continued bool) {
+	lines := strings.Split(history, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if isAccountSwitch(lines, i) {
+			return true, continued
+		}
+		l := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(l, "❯") && strings.Contains(l, "continue") {
+			continued = true
+		}
+	}
+	return false, continued
+}
+
+// wrapUpDue says whether a tile on the footer limit should get continue now:
+// straight after an account switch it hasn't continued from, else at the reset.
+// A continue from an earlier switch only rules out the first case: this limit
+// can be a later one, on the new account.
+func wrapUpDue(switched, continued bool, at, now time.Time) bool {
+	return (switched && !continued) || !now.Before(at.Add(limitMargin))
+}
+
+// resumeWrapUp types "continue" into a tile stopped by the footer limit:
+// right away when the account changed since (the new account has its own
+// limit), else once the limit resets. handled says the footer limit applied,
+// so the older "hit your limit" rule has nothing to do here.
+func resumeWrapUp(e *session.ExternalSession, screen string, done map[string]bool, now time.Time, due func(time.Time)) (handled bool) {
+	at, finished, ok := wrapUpLimit(screen, now)
+	if !ok {
+		return false
+	}
+	// Mid-turn: wait for it to stop. A background shell keeps a stopped tile
+	// "busy" (#2231), so that alone doesn't count as working.
+	if finished || (e.Status == "busy" && !strings.Contains(footerBelowBox(screen), " shell")) {
+		return true
+	}
+	// The footer limit is today's usual one, so it switches accounts too.
+	// switchedOnLimit acts once per limit; after the switch the tile prints
+	// its account-changed notice and the rule below continues it right away.
+	noteLimitSeen(at)
+	if now.Before(at.Add(limitMargin)) {
+		switchedOnLimit(at, now, done)
+	}
+	key := e.Name + "|wrapup|" + at.Format(time.RFC3339)
+	if done[key] {
+		return true
+	}
+	switched, continued := continuedAfterSwitch(session.PaneHistory(e.Live))
+	if !wrapUpDue(switched, continued, at, now) {
+		due(at.Add(limitMargin))
+		return true
+	}
+	// As in the older rule: finish a half-typed "co", leave any other draft.
+	typed, hasPrompt := promptText(e.Live)
+	rest, isContinue := continueRest(typed)
+	if !hasPrompt || !isContinue {
+		return true
+	}
+	done[key] = true
+	_ = session.PressKeys(e.Live, rest)
+	if switched && !continued {
+		logEvent("daemon: %s: wrap-up limit on the old account, typed continue", e.Name)
+	} else {
+		logEvent("daemon: %s: wrap-up limit reset (%s), typed continue", e.Name, at.Format("15:04"))
+	}
+	return true
 }
 
 // isLimitNotice reports whether line i is Claude's own limit notice: a
@@ -99,12 +206,28 @@ func isStep(l string) bool {
 	return strings.HasPrefix(l, "●") || strings.HasPrefix(l, "⏺")
 }
 
-// isAccountSwitch reports whether a step line is Claude's notice that the
+// isAccountSwitch reports whether line i starts Claude's notice that the
 // signed-in claude.ai account changed (the user ran /login for another
 // subscription): "Remote Control disconnected — signed-in claude.ai account
-// or organization changed on this machine …".
-func isAccountSwitch(l string) bool {
-	return isStep(l) && strings.Contains(l, "Remote Control disconnected — signed-in")
+// or organization changed on this machine …". Claude wraps the notice itself,
+// so tmux can't join it: in a 47-column tile "signed-in" lands on the next
+// line, and the first line read alone never matched.
+func isAccountSwitch(lines []string, i int) bool {
+	// A step starts at column 0. Indented, it is the notice quoted in tool
+	// output (a tile that read another tile's screen), which once made the
+	// runner type /remote-control into that tile too.
+	notice := strings.TrimRight(lines[i], " ")
+	if !isStep(notice) {
+		return false
+	}
+	for j := i + 1; j < len(lines) && j <= i+3; j++ {
+		next := strings.TrimSpace(lines[j])
+		if next == "" || isStep(next) {
+			break
+		}
+		notice += " " + next
+	}
+	return strings.Contains(notice, "Remote Control disconnected — signed-in")
 }
 
 // limitIsLast reports whether nothing happened after the latest limit line:
@@ -114,7 +237,8 @@ func isAccountSwitch(l string) bool {
 // A message sent below it ("❯ continue", other than the input box, which is
 // the last ❯ line) also means Claude took it: refused, it would print a new
 // limit line below. Without this, a continue Claude was still thinking on
-// 90s later looked refused and got a second one.
+// 90s later looked refused and got a second one. A slash command (/login,
+// /remote-control) isn't a message: it goes to Claude Code, not the model.
 func limitIsLast(screen string) bool {
 	lines := strings.Split(screen, "\n")
 	inputBox := -1
@@ -129,47 +253,64 @@ func limitIsLast(screen string) bool {
 		if isLimitNotice(lines, i) {
 			return true
 		}
-		if isStep(l) && !isAccountSwitch(l) {
+		if isStep(l) && !isAccountSwitch(lines, i) {
 			return false
 		}
-		if i != inputBox && strings.HasPrefix(l, "❯") && strings.TrimSpace(strings.TrimPrefix(l, "❯")) != "" {
+		if sent := strings.TrimSpace(strings.TrimPrefix(l, "❯")); i != inputBox && strings.HasPrefix(l, "❯") && sent != "" && !strings.HasPrefix(sent, "/") {
 			return false
 		}
 	}
 	return false
 }
 
-// switchedAccount reports whether the last step on the screen is the
-// account-switch notice: the user signed in to another subscription since
-// this session last did anything.
-func switchedAccount(screen string) bool {
-	lines := strings.Split(screen, "\n")
+// remoteControlOff reads a tile's scroll-back: the latest account-switch
+// notice (or the "Login successful" of the tile /login ran in) has no
+// /reload-plugins typed below it, so Remote Control or the claude.ai
+// connectors are still on the old account there.
+// The scroll-back, not the last step: a tile that was on a question or
+// mid-turn at the switch went on working after the notice, and the runner,
+// which only looked at the last step, never turned it back on (#3043, 5 Nov).
+// /remote-control below the notice means it was handled; it prints no step,
+// so this also survives a cs restart.
+func remoteControlOff(history string) bool {
+	lines := strings.Split(history, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
-		if l := strings.TrimSpace(lines[i]); isStep(l) {
-			return isAccountSwitch(l)
+		l := strings.TrimSpace(lines[i])
+		// Handled once /reload-plugins went in below it: the runner types it
+		// after /remote-control, and a continue must not come before it.
+		if strings.HasPrefix(l, "❯") && strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(l, "❯")), "/reload-plugins") {
+			return false
+		}
+		if strings.HasPrefix(l, "⎿") && strings.HasSuffix(l, "Login successful") {
+			return true
+		}
+		if isAccountSwitch(lines, i) {
+			return true
 		}
 	}
 	return false
 }
 
-// claudeAccount names the signed-in claude.ai account and organization
-// (from ~/.claude.json), so each switch is handled once per tile.
-func claudeAccount() string {
-	home, _ := os.UserHomeDir()
-	data, err := os.ReadFile(filepath.Join(home, ".claude.json"))
-	if err != nil {
-		return ""
-	}
-	var c struct {
-		OAuthAccount struct {
-			AccountUUID      string `json:"accountUuid"`
-			OrganizationUUID string `json:"organizationUuid"`
-		} `json:"oauthAccount"`
-	}
-	if json.Unmarshal(data, &c) != nil {
-		return ""
-	}
-	return c.OAuthAccount.AccountUUID + "/" + c.OAuthAccount.OrganizationUUID
+// rcTries remembers when /remote-control was last typed into a tile, and how
+// often: text that never lands (the tile's own screen showed nothing after
+// "typed" was logged at 12:47 on 5 Nov) is typed again after rcRetryAfter,
+// at most rcMaxTries times, instead of being written off for good.
+var rcTries = map[string]rcTry{}
+
+type rcTry struct {
+	at time.Time
+	n  int
+}
+
+const (
+	rcRetryAfter = 90 * time.Second
+	rcMaxTries   = 3
+)
+
+// rcDue says whether /remote-control should be typed into tile now.
+func rcDue(tile string, now time.Time) bool {
+	t := rcTries[tile]
+	return t.n < rcMaxTries && (t.n == 0 || now.Sub(t.at) >= rcRetryAfter)
 }
 
 // resumeAfterLimit types "continue" into idle tiles whose usage limit has
@@ -177,7 +318,6 @@ func claudeAccount() string {
 // returns when the next pending resume is due (zero: none), so the daemon
 // looks again right then instead of on its next 15s scan.
 func resumeAfterLimit(sessions []*session.ExternalSession, done map[string]bool, now time.Time) time.Time {
-	account := ""
 	var next time.Time
 	due := func(t time.Time) {
 		if t.After(now) && (next.IsZero() || t.Before(next)) {
@@ -197,21 +337,35 @@ func resumeAfterLimit(sessions []*session.ExternalSession, done map[string]bool,
 		// claude.ai connectors dropped, and the old account's limit no longer
 		// applies. Turn Remote Control back on, reload the connectors and, if the tile was stopped on a limit, carry on now
 		// instead of waiting for the old account's reset time.
-		if switchedAccount(screen) && promptEmpty(e.Live) {
-			if account == "" {
-				account = claudeAccount()
-			}
-			key := e.Name + "|account|" + account
-			if done[key] {
+		// Only once Claude stopped and the prompt is empty: typed into a busy
+		// tile it would queue, into a question it would pick an option.
+		// Remote Control off: nothing else is typed into this tile until
+		// /remote-control and /reload-plugins went in, so a continue never
+		// runs on the old account's connectors (glitchgrab #757 got a bare
+		// continue from the wrap-up rule below, 5 Nov).
+		rcOff := remoteControlOff(session.PaneHistory(e.Live))
+		if !rcOff {
+			delete(rcTries, e.Name) // handled: the next /login starts with fresh tries
+		}
+		if rcOff {
+			if e.Status == "busy" || !promptEmpty(e.Live) {
 				continue
 			}
-			done[key] = true
+			if !rcDue(e.Name, now) {
+				if rcTries[e.Name].n >= rcMaxTries && !done[e.Name+"|rc-gave-up"] {
+					done[e.Name+"|rc-gave-up"] = true
+					logEvent("daemon: %s: /remote-control typed %d times, still not on; type it in that tile", e.Name, rcMaxTries)
+				}
+				continue
+			}
+			rcTries[e.Name] = rcTry{at: now, n: rcTries[e.Name].n + 1}
 			_ = session.PressKeys(e.Live, "/remote-control")
 			// The claude.ai connectors (Glitchgrab: /stage's screenshot
 			// upload) stay signed in to the old account until reloaded.
 			time.Sleep(1500 * time.Millisecond) // let each local command finish first
 			_ = session.PressKeys(e.Live, "/reload-plugins")
 			logEvent("daemon: %s: claude.ai account changed, typed /remote-control and /reload-plugins", e.Name)
+			chromeFollowsAccount("account changed outside cs")
 			if ok && limitIsLast(screen) {
 				time.Sleep(1500 * time.Millisecond)
 				_ = session.PressKeys(e.Live, "continue")
@@ -220,17 +374,35 @@ func resumeAfterLimit(sessions []*session.ExternalSession, done map[string]bool,
 			}
 			continue
 		}
+		// A "hit your limit" line keeps its own rule below: it finishes a
+		// half-typed "co" and retries a continue sent too early.
+		if !(ok && limitIsLast(screen)) && resumeWrapUp(e, screen, done, now, due) {
+			continue
+		}
 		// promptEmpty (livepane.go) reads the colours: the greyed suggestion
 		// Claude shows in an empty prompt ("ok wait") isn't text someone typed;
 		// reading plain text skipped #2251 for it.
 		if !ok || !limitIsLast(screen) {
 			continue
 		}
+		noteLimitSeen(at)
+		key := e.Name + "|" + at.Format(time.RFC3339) // once per limit, tomorrow's too
 		if now.Before(at.Add(limitMargin)) {
+			// Limit still on: another saved account may have room. Switch
+			// once per limit, then carry on in this tile right away. If the
+			// running Claude didn't pick the new login up, the limit line is
+			// last again and the reset path below still applies.
+			if switchedOnLimit(at, now, done) && !done[key+"|acct"] {
+				typed, has := promptText(e.Live)
+				if rest, isContinue := continueRest(typed); has && isContinue {
+					done[key+"|acct"] = true
+					_ = session.PressKeys(e.Live, rest)
+					logEvent("daemon: %s: switched account, typed continue", e.Name)
+				}
+			}
 			due(at.Add(limitMargin))
 			continue
 		}
-		key := e.Name + "|" + at.Format(time.RFC3339) // once per limit, tomorrow's too
 		// Text left in the prompt: the start of "continue" (typed while the
 		// limit was on, #2568's "co") is finished; anything else is someone's
 		// draft and is left alone.
@@ -270,4 +442,105 @@ func continueRest(typed string) (string, bool) {
 		return "continue"[len(typed):], true
 	}
 	return "", false
+}
+
+// useAccount and chromeReset are swapped in tests.
+var (
+	useAccount  = session.UseAccount
+	chromeReset = session.ResetChromeExtension
+)
+
+// limitOwner: which account was signed in the first time a limit notice (by
+// reset time) was seen. A notice still on a tile's screen after a switch or
+// /login belongs to that account, not to whoever is current now; crediting the
+// current one marked `main` limited until 18:00 on 2026-11-23 when it was 12:30.
+// A notice first seen after a cs restart counts as the current account's.
+var limitOwner = map[string]string{}
+
+// switchedOnLimit switches Claude to the next saved account once per limit
+// (all tiles share one login, so the first tile to see it does the switch).
+// It reports whether the switch happened, for every later tile on this limit.
+func switchedOnLimit(at, now time.Time, done map[string]bool) bool {
+	gk := "acct|" + at.Format(time.RFC3339)
+	if done[gk] {
+		return done[gk+"|ok"]
+	}
+	done[gk] = true
+	cur := session.CurrentAccountUUID()
+	owner, seen := limitOwner[gk]
+	if !seen {
+		owner = cur
+		limitOwner[gk] = owner
+	}
+	session.MarkAccountLimited(owner, at)
+	if owner != cur {
+		// Old account's notice, left on the screen: already moved on.
+		logEvent("daemon: limit until %s was the previous account's; not switching", at.Format("15:04"))
+		return false
+	}
+	next, ok := session.NextAccount(now)
+	if !ok {
+		logEvent("daemon: usage limit until %s and no other saved account has room (cs account add <name>)", at.Format("15:04"))
+		return false
+	}
+	if err := useAccount(next.Name); err != nil {
+		logEvent("daemon: switch to account %s failed: %v", next.Name, err)
+		return false
+	}
+	logEvent("daemon: usage limit until %s, switched to account %s", at.Format("15:04"), next.Name)
+	chromeFollowsAccount("switched account")
+	done[gk+"|ok"] = true
+	return true
+}
+
+// noteLimitSeen records the signed-in account when a limit notice first
+// shows up on any tile, before anything decides what to do with it.
+func noteLimitSeen(at time.Time) {
+	gk := "acct|" + at.Format(time.RFC3339)
+	if _, ok := limitOwner[gk]; !ok {
+		limitOwner[gk] = session.CurrentAccountUUID()
+	}
+}
+
+// chromeFollowsAccount moves the Chrome extension to the account Claude is
+// signed in as, once per account, whoever changed it (cs, or a manual /login:
+// tiles then showed "Remote Control disconnected" while the extension stayed on
+// the old account, so Claude in Chrome was "not connected"). Up to ~16s of
+// clicking: in the background, not inside the runner's scan.
+func chromeFollowsAccount(why string) {
+	email, ok := session.ChromeNeedsReset()
+	if !ok {
+		return
+	}
+	go func() {
+		res := chromeReset(email)
+		logEvent("daemon: chrome extension (%s): %s", why, res)
+		ReloadTilesAfterChrome(res)
+	}()
+}
+
+// ReloadTilesAfterChrome types /reload-plugins into every idle tile once the
+// extension has signed in: the tiles reloaded at the account change, before the
+// extension finished signing in, so their Claude in Chrome connection stayed
+// "not connected" (#3314, 2026-11-23). Only after a successful sign-in; busy
+// tiles and tiles with text in the prompt are left alone.
+func ReloadTilesAfterChrome(result string) int {
+	if !strings.Contains(result, "signed in as") {
+		return 0
+	}
+	list, _, err := session.ListExternalSessions()
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, e := range list {
+		if e.Kind != session.KindTmux || e.Status == "busy" || e.Status == "waiting" || e.Live == "" || !promptEmpty(e.Live) {
+			continue
+		}
+		_ = session.PressKeys(e.Live, "/reload-plugins")
+		logEvent("daemon: %s: extension signed in, typed /reload-plugins", e.Name)
+		n++
+		time.Sleep(1500 * time.Millisecond)
+	}
+	return n
 }

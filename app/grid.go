@@ -157,6 +157,7 @@ func (m *home) refreshGrid() tea.Cmd {
 				m.gridMarkdown[e.SessionID] = &ui.MarkdownCache{}
 			}
 			j.md = m.gridMarkdown[e.SessionID]
+			j.back = m.viewScroll[e.SessionID]
 		}
 		jobs = append(jobs, j)
 	}
@@ -196,6 +197,7 @@ type gridJob struct {
 	cursorFor string
 	dup       bool // its conversation is open in another tile too
 	md        *ui.MarkdownCache
+	back      viewPos // view-only tile: how far it is scrolled back
 }
 
 type gridCapturedMsg struct {
@@ -247,7 +249,11 @@ func captureTile(j gridJob, w, h int) ui.GridTile {
 	if e.Kind == session.KindTerminal {
 		md, version := e.Conversation()
 		t.Status = "view only"
-		t.Content = j.md.Render(md, version, w)
+		var back int
+		t.Content, back = viewOnlyWindow(j.md.Render(md, version, w), h, j.back, e.SessionID)
+		if back > 0 {
+			t.Status = fmt.Sprintf("view only · ↑%d", back)
+		}
 		return t
 	}
 	name, err := e.EnsureLive(w, h)
@@ -271,7 +277,19 @@ func captureTile(j gridJob, w, h int) ui.GridTile {
 	}
 	dropped := 0
 	if !tmux.IsScrolled(name) {
-		t.Content, dropped = fillFromHistory(name, t.Content)
+		if dead, ok := deadPaneContent(name, t.Content, h); ok && session.PaneDead(name) {
+			t.Content = dead
+		} else {
+			t.Content, dropped = fillFromHistory(name, t.Content)
+		}
+	} else if dead, ok := deadPaneContent(name, t.Content, h); ok && session.PaneDead(name) {
+		t.Content = dead
+	} else if contentRows(t.Content) == 0 && session.PaneDead(name) {
+		// Wheel-scrolled onto the blank rows of a dead pane: the tile said
+		// "Nothing on screen yet" over gai's error (#2987, 2026-11-04).
+		if dead, ok := deadPaneHistory(name, h); ok {
+			t.Content = dead
+		}
 	}
 	if strings.Contains(ansi.Strip(t.Content), "Save and close editor to continue") {
 		// Claude opened the prompt in an editor (Ctrl+G) and reads nothing
@@ -318,6 +336,83 @@ func fillFromHistory(name, content string) (string, int) {
 		}
 	}
 	return strings.Join(append(above, lines[:rows]...), "\n") + "\n", blank
+}
+
+// deadPaneContent rebuilds the tile of a pane whose program exited (kept by
+// remain-on-exit, e.g. gai failing before Claude starts). tmux writes
+// "Pane is dead" on the pane's last row; when cs then shrinks the pane to its
+// tile, the rows above, gai's error included, go into the scroll-back, and
+// the tile showed only blank rows over "Pane is dead" (abhyaiska #1103/#1105,
+// 2026-11-03). The scroll-back is read back with the blank gap dropped.
+func deadPaneContent(name, content string, h int) (string, bool) {
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	rows := contentRows(content)
+	at := deadLineAt(lines[:rows])
+	if at < 0 {
+		return "", false
+	}
+	if at >= 1 && strings.TrimSpace(ansi.Strip(lines[at-1])) != "" {
+		return "", false // text right above it: nothing pushed away
+	}
+	return deadPaneHistory(name, h)
+}
+
+// deadLineAt is the row where tmux's "Pane is dead (status N, <date>)" starts
+// among the last rows, or -1. In a narrow tile the line wraps, so the last
+// row is only its tail, e.g. "6)" (practice-stack #2944, 2026-11-14).
+func deadLineAt(lines []string) int {
+	end := len(lines)
+	for end > 0 && strings.TrimSpace(ansi.Strip(lines[end-1])) == "" {
+		end--
+	}
+	for i := end - 1; i >= 0 && i >= end-3; i-- {
+		if strings.HasPrefix(strings.TrimSpace(ansi.Strip(lines[i])), "Pane is dead") {
+			return i
+		}
+	}
+	return -1
+}
+
+// deadPaneHistory is a dead pane's whole history with the blank gap dropped,
+// cut to h rows.
+func deadPaneHistory(name string, h int) (string, bool) {
+	// Not -J: the tile is the pane's width, so wrapped rows stay rows.
+	out, err := exec.Command("tmux", "capture-pane", "-p", "-e", "-S", "-", "-t", name).Output()
+	if err != nil {
+		return "", false
+	}
+	return strings.Join(compactDead(strings.Split(strings.TrimSuffix(string(out), "\n"), "\n"), h), "\n") + "\n", true
+}
+
+// compactDead drops the blank rows right above the last "Pane is dead" line
+// (one stays as a gap) and keeps the last h rows.
+func compactDead(all []string, h int) []string {
+	blank := func(s string) bool { return strings.TrimSpace(ansi.Strip(s)) == "" }
+	end := len(all)
+	for end > 0 && blank(all[end-1]) {
+		end--
+	}
+	if end == 0 {
+		return nil
+	}
+	start := deadLineAt(all[:end])
+	if start < 0 {
+		start = end - 1
+	}
+	dead := all[start:end] // more than one row when tmux wrapped it
+	top := start
+	for top > 0 && blank(all[top-1]) {
+		top--
+	}
+	out := append([]string{}, all[:top]...)
+	if top > 0 {
+		out = append(out, "")
+	}
+	out = append(out, dead...)
+	if h > 0 && len(out) > h {
+		out = out[len(out)-h:]
+	}
+	return out
 }
 
 // cursorInto draws the cursor into a tile when it's the session being typed into.
@@ -533,7 +628,8 @@ type cachedTile struct {
 func (m *home) renderGridCached() string {
 	tiles, focus := m.shownTiles()
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d|%d|%d|%d|", focus, m.paneWidth, m.contentHeight, m.ghostIdx())
+	originX := m.screenWidth - m.paneWidth // same origin as hitGrid
+	fmt.Fprintf(&b, "%d|%d|%d|%d|%d|", focus, m.paneWidth, m.contentHeight, m.ghostIdx(), originX)
 	for _, t := range tiles {
 		fmt.Fprintf(&b, "%s|%s|%s|%v|%d|", t.Title, t.Status, t.Model, t.NeedsYou, len(t.Content))
 		b.WriteString(t.Content)
@@ -547,7 +643,7 @@ func (m *home) renderGridCached() string {
 	}
 	m.gridRenderKey = key
 	m.gridRendered = lipgloss.JoinVertical(lipgloss.Left, strip,
-		ui.RenderGrid(tiles, focus, m.paneWidth, m.contentHeight))
+		ui.RenderGrid(tiles, focus, m.paneWidth, m.contentHeight, originX))
 	return m.gridRendered
 }
 

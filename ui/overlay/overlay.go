@@ -2,6 +2,7 @@ package overlay
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -145,6 +146,10 @@ func PlaceOverlay(
 			continue
 		}
 		bgLineWidth := xansi.StringWidth(bgLine)
+		// A cut keeps every escape code, so a column move from past the cut
+		// would throw the dialog across the screen. Drop them and pin the
+		// dialog and the rest of the row instead.
+		bgLine, pinned := StripColumnMoves(bgLine)
 
 		left := xansi.Truncate(bgLine, placeX, "")
 		b.WriteString(left)
@@ -152,6 +157,9 @@ func PlaceOverlay(
 			b.WriteString(ws.render(placeX - w))
 		}
 
+		if pinned {
+			b.WriteString(ColumnMove(placeX))
+		}
 		fgLine := fgLines[i-placeY]
 		b.WriteString("\x1b[0m")
 		b.WriteString(fgLine)
@@ -164,6 +172,9 @@ func PlaceOverlay(
 		if end >= bgLineWidth {
 			continue
 		}
+		if pinned {
+			b.WriteString(ColumnMove(end))
+		}
 		right := xansi.TruncateLeft(bgLine, end, "")
 		// A wide character cut in half leaves the row a column short.
 		if w := xansi.StringWidth(right); end+w < bgLineWidth {
@@ -173,6 +184,21 @@ func PlaceOverlay(
 	}
 
 	return b.String()
+}
+
+// ColumnMove moves the cursor to the 0-based screen column.
+func ColumnMove(col int) string {
+	return "\x1b[" + strconv.Itoa(col+1) + "G"
+}
+
+var columnMoveRe = regexp.MustCompile(`\x1b\[[0-9]+G`)
+
+// StripColumnMoves removes the column moves tile rows carry (ui.pinLineEnd)
+// and says whether there were any. Use it before cutting a row: ansi.Cut and
+// Truncate keep escape codes from the part they drop.
+func StripColumnMoves(line string) (string, bool) {
+	out := columnMoveRe.ReplaceAllString(line, "")
+	return out, len(out) != len(line)
 }
 
 func clamp(v, lower, upper int) int {

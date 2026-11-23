@@ -17,6 +17,14 @@ import (
 // continue Claude refused (sent before the server's reset) is sent once more.
 // Live: a private tmux server whose pane shows the limit and counts what is typed.
 func TestResumeAfterLimitTiming(t *testing.T) {
+	// Never touch the real logins: no saved accounts, no real swap.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_SQUAD_HOME", home+"/cs")
+	limitOwner = map[string]string{}
+	chromeReset = func(string) string { return "" }
+	useAccount = func(string) error { return nil }
+	defer func() { useAccount = session.UseAccount }()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("no tmux")
 	}

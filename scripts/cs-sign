@@ -1,0 +1,12 @@
+#!/bin/zsh
+# cs-sign <binary>: sign a cs build with the local certificate, so macOS sees
+# every rebuild as the same app and keeps its privacy choices. Machines
+# without the keychain (~/.claude-squad/signing) keep the ad-hoc signature.
+# Never fails the build. See docs/issue-log.md, "App Management".
+
+D="$HOME/.claude-squad/signing"
+KC="$D/cs-sign.keychain-db"
+[[ -f "$KC" && -f "$D/keychain-pass" ]] || exit 0
+security unlock-keychain -p "$(<"$D/keychain-pass")" "$KC" 2>/dev/null
+codesign -f -s "cs-fork local signing" -i cs-fork --keychain "$KC" "$1" 2>/dev/null
+exit 0

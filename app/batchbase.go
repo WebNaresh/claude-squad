@@ -4,6 +4,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"claude-squad/session"
 )
 
 // Before the first issue of a new batch (no open PR of the project's own:
@@ -72,8 +74,7 @@ func freshBase(project string) (ok bool, why string) {
 // openPRFrom returns the number of an open PR whose head is branch, or "".
 // A variable so tests (repos without GitHub) can stand in for gh.
 var openPRFrom = func(project, branch string) (string, error) {
-	cmd := exec.Command("gh", "pr", "list", "--state", "open", "--head", branch, "--json", "number", "--jq", ".[].number")
-	cmd.Dir = project
+	cmd := session.GhCmd(project, "pr", "list", "--state", "open", "--head", branch, "--json", "number", "--jq", ".[].number")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err
