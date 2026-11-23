@@ -122,7 +122,7 @@ var (
 
 	accountCmd = &cobra.Command{
 		Use:   "account",
-		Short: "Save Claude logins and switch between them (add|list|use|remove|chrome)",
+		Short: "Save Claude logins and switch between them (add|list|use|remove|chrome|reload)",
 		Long: "add <name>: save the login Claude is signed in to now.\n" +
 			"list: saved logins and which is active.\n" +
 			"remove <name>: forget a saved login (the active one is unchanged).\n" +
@@ -178,9 +178,15 @@ var (
 						}
 					}
 				}
-				fmt.Println("chrome extension:", session.ResetChromeExtension(email))
+				res := session.ResetChromeExtension(email)
+				fmt.Println("chrome extension:", res)
+				session.MarkChromeAccount(session.CurrentAccountUUID())
+				fmt.Println("tiles reloaded:", app.ReloadTilesAfterChrome(res))
 				time.Sleep(2 * time.Second)
 				fmt.Println("page now:", session.ChromePageText())
+			case "reload":
+				// Only the tile reload, for when the extension is already signed in.
+				fmt.Println("tiles reloaded:", app.ReloadTilesAfterChrome("signed in as"))
 			case "use":
 				if len(args) != 2 {
 					return fmt.Errorf("usage: account use <name>")
@@ -191,9 +197,10 @@ var (
 				fmt.Println("switched to", args[1])
 				if acc, err := session.LoadAccount(args[1]); err == nil {
 					fmt.Println("chrome extension:", session.ResetChromeExtension(acc.Email))
+					session.MarkChromeAccount(acc.AccountUUID)
 				}
 			default:
-				return fmt.Errorf("unknown: %s (add|list|use|remove|chrome)", args[0])
+				return fmt.Errorf("unknown: %s (add|list|use|remove|chrome|reload)", args[0])
 			}
 			return nil
 		},
