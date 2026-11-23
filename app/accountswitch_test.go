@@ -14,6 +14,7 @@ func TestSwitchedOnLimitOncePerLimit(t *testing.T) {
 	t.Setenv("HOME", home) // ~/.claude.json lives here; the real one is never read
 	os.WriteFile(filepath.Join(home, ".claude.json"), []byte(`{"oauthAccount":{"accountUuid":"A"}}`), 0o600)
 	var used []string
+	chromeReset = func(string) string { return "" }
 	useAccount = func(n string) error { used = append(used, n); return nil }
 	defer func() { useAccount = session.UseAccount }()
 
