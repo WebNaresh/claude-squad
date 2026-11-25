@@ -24,6 +24,7 @@ type statusBar struct {
 	stripPRs map[string]prEntry
 	pushing  map[string]bool
 	pulling  map[string]bool
+	fetched  map[string]time.Time // last background fetch, per project
 	// Where the clickable parts were drawn on the bottom row (columns).
 	syncSpan, pullSpan, prSpan, refreshSpan [2]int
 }
@@ -43,9 +44,11 @@ type prMsg struct {
 }
 
 type pushDoneMsg struct {
-	root  string
-	ahead int
-	err   error
+	root    string
+	ahead   int
+	err     error
+	in      *git.Incoming // set when the push failed because both sides moved
+	started time.Time
 }
 
 // barBG is VS Code Dark Modern's status bar colour.
@@ -256,6 +259,9 @@ func (m *home) pullProject() tea.Cmd {
 	if sy.Upstream == "" {
 		return m.handleError(fmt.Errorf("%s has no upstream to pull from: publish it first", st.branch))
 	}
+	if sy.Behind > 0 && sy.Ahead > 0 {
+		return m.startMergeCheck(root, false) // a plain pull would be refused
+	}
 	if sy.Behind == 0 {
 		// The count comes from the last fetch: a pull fetches first, so
 		// "up to date" here still means one real check against GitHub.
@@ -271,23 +277,60 @@ func (m *home) pullProject() tea.Cmd {
 type pullStartMsg struct{ root string }
 
 type pullDoneMsg struct {
-	root string
-	err  error
+	root    string
+	err     error
+	in      *git.Incoming // set when the pull failed because both sides moved
+	started time.Time
 }
 
-func (m *home) startPull(root string) tea.Cmd {
+// fetchEvery is how often the open project's upstream is fetched, so ↓N says
+// what is on GitHub now. Without it ↓ stayed at 0 until someone fetched by hand.
+const fetchEvery = 5 * time.Minute
+
+// fetchUpstream fetches the open project in the background when it is due; the
+// next status read shows the new count. A failure (no network) stays quiet.
+func (m *home) fetchUpstream() tea.Cmd {
+	root := m.projectTabs.Active()
+	if root == "" || m.bar.sync[root].Upstream == "" || m.bar.pushing[root] || m.bar.pulling[root] ||
+		time.Since(m.bar.fetched[root]) < fetchEvery {
+		return nil
+	}
+	if m.bar.fetched == nil {
+		m.bar.fetched = map[string]time.Time{}
+	}
+	m.bar.fetched[root] = time.Now()
+	return func() tea.Msg {
+		if err := git.Fetch(root); err != nil {
+			logEvent("background fetch of %s: %v", root, err)
+		}
+		return nil
+	}
+}
+
+func (m *home) markPulling(root string) {
 	if m.bar.pulling == nil {
 		m.bar.pulling = map[string]bool{}
 	}
 	m.bar.pulling[root] = true
+}
+
+func (m *home) startPull(root string) tea.Cmd {
+	m.markPulling(root)
 	logEvent("pull started: %s", root)
-	return func() tea.Msg { return pullDoneMsg{root: root, err: git.Pull(root)} }
+	started := time.Now()
+	return func() tea.Msg {
+		err := git.Pull(root)
+		return pullDoneMsg{root: root, err: err, in: divergedNow(root, err), started: started}
+	}
 }
 
 func (m *home) pullDone(msg pullDoneMsg) tea.Cmd {
 	delete(m.bar.pulling, msg.root)
 	if msg.err != nil {
 		logEvent("pull failed: %v", msg.err)
+		if msg.in != nil {
+			return tea.Batch(m.offerMerge(msg.root, *msg.in, false, msg.started), m.refreshSourceControl())
+		}
 		return tea.Batch(m.handleError(msg.err), m.refreshSourceControl())
 	}
 	logEvent("pulled: %s", msg.root)
@@ -302,8 +345,11 @@ func (m *home) pushProject() tea.Cmd {
 	if st.branch == "" {
 		return m.handleError(fmt.Errorf("this project isn't on a branch"))
 	}
-	if m.bar.pushing[root] {
+	if m.bar.pushing[root] || m.bar.pulling[root] {
 		return nil
+	}
+	if sy.Ahead > 0 && sy.Behind > 0 {
+		return m.startMergeCheck(root, true) // GitHub would refuse the push
 	}
 	if sy.Upstream != "" && sy.Ahead == 0 {
 		return m.handleError(fmt.Errorf("nothing to push: %s is up to date with %s", st.branch, sy.Upstream))
@@ -311,9 +357,6 @@ func (m *home) pushProject() tea.Cmd {
 	question := fmt.Sprintf("Push %d commit(s) on %s to %s?", sy.Ahead, st.branch, sy.Upstream)
 	if sy.Upstream == "" {
 		question = fmt.Sprintf("Publish branch %s to origin?", st.branch)
-	}
-	if sy.Behind > 0 {
-		question += fmt.Sprintf(" (%d to pull first: the push may be refused)", sy.Behind)
 	}
 	return m.confirmAction(question, func() tea.Msg {
 		return pushStartMsg{root: root}
@@ -329,15 +372,125 @@ func (m *home) startPush(root string) tea.Cmd {
 	m.bar.pushing[root] = true
 	ahead := m.bar.sync[root].Ahead
 	logEvent("push started: %s (%d commits)", root, ahead)
+	started := time.Now()
 	return func() tea.Msg {
-		return pushDoneMsg{root: root, ahead: ahead, err: git.Push(root)}
+		err := git.Push(root)
+		return pushDoneMsg{root: root, ahead: ahead, err: err, in: divergedNow(root, err), started: started}
 	}
+}
+
+// divergedNow says whether a pull or push failed because both sides have new
+// commits. The bar's ↓ count can't: it is as old as the last fetch.
+func divergedNow(root string, err error) *git.Incoming {
+	if err == nil {
+		return nil
+	}
+	if in, err := git.CheckIncoming(root); err == nil && in.Diverged() {
+		return &in
+	}
+	return nil
+}
+
+type mergeCheckMsg struct {
+	root    string
+	push    bool
+	in      git.Incoming
+	err     error
+	started time.Time
+}
+
+type mergeStartMsg struct {
+	root string
+	push bool
+}
+
+type mergeDoneMsg struct {
+	root string
+	push bool
+	err  error
+}
+
+func (m *home) startMergeCheck(root string, push bool) tea.Cmd {
+	m.markPulling(root)
+	started := time.Now()
+	return func() tea.Msg {
+		in, err := git.CheckIncoming(root)
+		return mergeCheckMsg{root: root, push: push, in: in, err: err, started: started}
+	}
+}
+
+func (m *home) mergeChecked(msg mergeCheckMsg) tea.Cmd {
+	delete(m.bar.pulling, msg.root)
+	if msg.err != nil {
+		return tea.Batch(m.handleError(msg.err), m.refreshSourceControl())
+	}
+	if !msg.in.Diverged() { // someone else merged or pushed meanwhile
+		return tea.Batch(m.handleError(fmt.Errorf("the branch changed meanwhile: press it again")), m.refreshSourceControl())
+	}
+	return tea.Batch(m.offerMerge(msg.root, msg.in, msg.push, msg.started), m.refreshSourceControl())
+}
+
+// offerMerge asks to merge the upstream's commits (and push). It comes up by
+// itself after a refused push, so it never opens over another dialog, another
+// project, or keys typed since: a "y" meant for a tile would confirm it.
+func (m *home) offerMerge(root string, in git.Incoming, push bool, started time.Time) tea.Cmd {
+	newer := fmt.Sprintf("%s has %d newer commit(s)", in.Upstream, in.Behind)
+	if len(in.Authors) > 0 {
+		newer += " by " + strings.Join(in.Authors, ", ")
+	}
+	if n := len(in.Conflicts); n > 0 {
+		files := in.Conflicts[0]
+		if n > 1 {
+			files += fmt.Sprintf(" and %d more", n-1)
+		}
+		logEvent("merge needed in %s, conflicts: %s", root, strings.Join(in.Conflicts, ", "))
+		return m.handleError(fmt.Errorf("%s that clash with yours in %s: ask a Claude here to merge %s", newer, files, in.Upstream))
+	}
+	if m.state != stateDefault || m.projectTabs.Active() != root || m.lastKey.After(started) {
+		button := "↓"
+		if push {
+			button = "↑"
+		}
+		return m.handleError(fmt.Errorf("%s: click %s again to merge them", newer, button))
+	}
+	logEvent("merge offered in %s: %d behind, %d ahead", root, in.Behind, in.Ahead)
+	question := newer + ". No conflicts. Merge them into yours"
+	if push {
+		question += fmt.Sprintf(" and push your %d", in.Ahead)
+	}
+	return m.confirmAction(question+"?", func() tea.Msg { return mergeStartMsg{root: root, push: push} })
+}
+
+func (m *home) startMerge(root string, push bool) tea.Cmd {
+	m.markPulling(root)
+	logEvent("merge started: %s", root)
+	return func() tea.Msg { return mergeDoneMsg{root: root, push: push, err: git.MergeUpstream(root)} }
+}
+
+func (m *home) mergeDone(msg mergeDoneMsg) tea.Cmd {
+	delete(m.bar.pulling, msg.root)
+	if msg.err != nil {
+		logEvent("%v", msg.err)
+		return tea.Batch(m.handleError(msg.err), m.refreshSourceControl())
+	}
+	logEvent("merged: %s", msg.root)
+	if msg.push {
+		if m.bar.sync == nil {
+			m.bar.sync = map[string]git.SyncState{}
+		}
+		m.bar.sync[msg.root] = git.Sync(msg.root) // the merge is one commit more to push
+		return m.startPush(msg.root)
+	}
+	return tea.Batch(m.handleError(fmt.Errorf("merged: nothing left to pull")), m.refreshSourceControl())
 }
 
 func (m *home) pushDone(msg pushDoneMsg) tea.Cmd {
 	delete(m.bar.pushing, msg.root)
 	if msg.err != nil {
 		logEvent("push failed: %v", msg.err)
+		if msg.in != nil {
+			return tea.Batch(m.offerMerge(msg.root, *msg.in, true, msg.started), m.refreshSourceControl())
+		}
 		return tea.Batch(m.handleError(msg.err), m.refreshSourceControl())
 	}
 	logEvent("pushed %d commits: %s", msg.ahead, msg.root)
