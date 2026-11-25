@@ -415,6 +415,17 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Saw:** the user wanted 3 or 4 of the ticked issues; unticking the rest with space marked each "(skipped)", so auto never offered them again and they looked gone. They asked for skip to be its own key, and for a quick way to start exactly 1, 2 or 6.
 - **Fix:** space only ticks/unticks (ticking a skipped issue takes the skip back). `x` skips or un-skips; a skipped issue stays in the list, greyed, and can be ticked any time. Digits 1-9 tick the first N startable issues in list order (no session, not skipped) and untick the rest. File: `ui/issuepicker.go`. Test: `TestPickerTickSkipAndCount`.
 
+### Skipped issues filled the top of the issue picker (2026-11-25)
+- **Saw:** practice-stack's picker opened on 18 skipped or waiting issues (the oldest ones are the ones that get skipped); the ticked, startable ones were at the bottom.
+- **Fix:** startable issues come first, then a line `── On hold: 2 with a session · 9 waiting · 9 skipped ──` and those issues, each group by age in the chosen order. `tab` jumps to the on-hold ones and back. After `x` the row stays under the cursor (x again takes it back) and moves when the cursor leaves it or the list reloads. Files: `ui/issuepicker.go` (`arrange`, `moveTo`, `holdLine`).
+- **Guard:** `TestPickerOnHoldBelow`, `TestPickerSkipMovesBelowOnLeave`, `TestPickerOnHoldLastRowVisible`.
+- **Found on the way:** the list saved on disk lost the video and research marks, so right after a cs restart the picker ticked those issues, and the ticks stayed when the fresh list came. Now saved (`cachedIssue`, `app/issues.go`). Guard: `TestIssueCacheKeepsOnHold`.
+
+### Issue picker didn't say who asked for an issue (2026-11-25)
+- **Saw:** customers' issues were mixed with the user's own and automatic ones; no name, no filter.
+- **Fix:** every row shows the person, read from the body's "Reported by" line (GitHub's author is Glitchgrab's app). Issues from anyone but you (git `user.name`) come first, then your own and nameless ones; the background runner starts them in the same order (`ByPriority`). `f` lists the people: enter shows only theirs, space ticks several, `p` pins someone above everyone (saved per project in `.prefs.json`; the filter isn't saved). Files: `session/reporter.go`, `ui/issuepeople.go`, `ui/issuepicker.go`, `app/issuesdaemon.go`.
+- **Guard:** `session/reporter_test.go`, `ui/issuepeople_test.go`.
+
 ### GlitchRecord runs opened their own tile (2026-10-30)
 - **Saw:** a `practise_stack` tab with a view-only tile (`practise-stack-26`) showing GlitchRecord's script-review prompt, opened by itself and replaced by a new one each round.
 - **Cause:** GlitchRecord starts `claude -p` per round. `claude agents --json` lists those as `kind: interactive`, so cs treated each as a person's session in another terminal.
