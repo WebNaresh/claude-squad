@@ -428,6 +428,12 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Guard:** `TestPickerOnHoldBelow`, `TestPickerSkipMovesBelowOnLeave`, `TestPickerOnHoldLastRowVisible`.
 - **Found on the way:** the list saved on disk lost the video and research marks, so right after a cs restart the picker ticked those issues, and the ticks stayed when the fresh list came. Now saved (`cachedIssue`, `app/issues.go`). Guard: `TestIssueCacheKeepsOnHold`.
 
+### Push refused, no way on (2026-11-25)
+- **Saw:** bar showed `↓0 ↑15`; pushing said only "See the 'Note about fast-forwards'", every time.
+- **Cause:** a teammate had pushed 2 commits. The `↓` count is as old as the last fetch, the message was git's last line (a hint), and `↓` pulls fast-forward only, which a branch with commits on both sides refuses.
+- **Fix:** after a refused push or pull cs fetches and asks "origin/main has 2 newer commit(s) by …. No conflicts. Merge them into yours and push your 15?". `↑`/`↓` ask it straight away when the bar already knows. Conflicts: it names the file and merges nothing; a failed merge is undone. Uncommitted edits to a file the merge changes are checked too and kept (autostash); staged ones must be committed first. Not shown over a dialog, another project, or keys typed since the push (then: "click ↑ again"). Errors show git's reason (`gitReason`). The open project is fetched every 5 min so `↓` is current (`fetchUpstream`). Files: `session/git/sync.go`, `app/statusbar.go`.
+- **Guard:** `session/git/sync_test.go`, `TestOfferMerge`.
+
 ### Waiting issue tiles vanished for a minute (2026-11-25)
 - **Saw:** 6 issues picked at once in practice-stack; 17s later 5 tiles disappeared. They came back one at a time as each issue started.
 - **Cause:** a code edit rebuilt cs, the background runner restarted on the new build, and its start-up cleanup (`CloseStaleQueuedIssues`) closed every "queued" tile, also the window's, whose queue was still intact. No work lost: a queued tile has no Claude yet.
