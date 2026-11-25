@@ -691,7 +691,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, keyboardCheck()
 	case scTickMsg:
-		return m, tea.Batch(m.refreshSourceControl(), scTick())
+		return m, tea.Batch(m.refreshSourceControl(), m.fetchUpstream(), scTick())
 	case scStatusMsg:
 		delete(m.scLoading, msg.root)
 		m.scCache[msg.root] = msg
@@ -723,6 +723,12 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.startPull(msg.root)
 	case pullDoneMsg:
 		return m, m.pullDone(msg)
+	case mergeCheckMsg:
+		return m, m.mergeChecked(msg)
+	case mergeStartMsg:
+		return m, m.startMerge(msg.root, msg.push)
+	case mergeDoneMsg:
+		return m, m.mergeDone(msg)
 	case pushStartMsg:
 		return m, m.startPush(msg.root)
 	case pushDoneMsg:
