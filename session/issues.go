@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -588,7 +589,9 @@ func IssueNumberOf(name string) int {
 	return n
 }
 
-// queuedOption marks an issue session that only shows "queued" so far.
+// queuedOption marks an issue session that only shows "queued" so far. Its
+// value is the pid of the cs that queued it (the window or the background
+// runner), which is the only one that will start it.
 const queuedOption = "@cs_queued"
 
 // QueueIssueSession opens an issue's session at once, showing that it waits
@@ -606,7 +609,7 @@ func QueueIssueSession(dir string, issue Issue) (string, error) {
 		return "", fmt.Errorf("could not open issue #%d: %s", issue.Number, strings.TrimSpace(string(out)))
 	}
 	_ = exec.Command("tmux", "set-option", "-t", name, "window-size", "latest").Run()
-	_ = exec.Command("tmux", "set-option", "-t", name, queuedOption, "1").Run()
+	_ = exec.Command("tmux", "set-option", "-t", name, queuedOption, strconv.Itoa(os.Getpid())).Run()
 	return name, nil
 }
 
@@ -627,23 +630,46 @@ func IssueClosed(dir string, n int) (bool, error) {
 func CloseQueuedIssue(dir string, n int) {
 	name := IssueSessionName(dir, n)
 	out, _ := exec.Command("tmux", "show-options", "-v", "-t", name, queuedOption).Output()
-	if strings.TrimSpace(string(out)) == "1" {
+	if strings.TrimSpace(string(out)) != "" {
 		_ = exec.Command("tmux", "kill-session", "-t", "="+name).Run()
 	}
 }
 
 // CloseStaleQueuedIssues ends "queued" issue sessions left by an earlier cs
-// run: the queue lives in memory, so nothing would ever start them.
+// run: the queue lives in memory, so nothing would ever start them. Not the
+// ones of a cs that still runs: the background runner restarts on every new
+// build, and closed the window's waiting tiles while its queue was intact
+// (practice-stack, 2026-11-25: 5 of 6 tiles vanished for up to 90s).
 func CloseStaleQueuedIssues() {
 	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name} #{"+queuedOption+"}").Output()
 	if err != nil {
 		return
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if name, flag, ok := strings.Cut(line, " "); ok && flag == "1" {
+		name, owner, _ := strings.Cut(line, " ")
+		if pid, err := strconv.Atoi(owner); err == nil && !queueOwnerRuns(pid) {
 			_ = exec.Command("tmux", "kill-session", "-t", "="+name).Run()
 		}
 	}
+}
+
+// queueOwnerRuns reports whether pid is another cs that is still running. This
+// process has just started, so a tile with its own pid is an old one; the
+// name is compared because macOS gives old pids to new programs.
+func queueOwnerRuns(pid int) bool {
+	// 1 is what builds before 2026-11-25 wrote: owner unknown, left alone.
+	if pid == 1 {
+		return true
+	}
+	if pid == os.Getpid() {
+		return false
+	}
+	comm := func(p int) string {
+		out, _ := exec.Command("ps", "-o", "comm=", "-p", strconv.Itoa(p)).Output()
+		return filepath.Base(strings.TrimSpace(string(out)))
+	}
+	c := comm(pid)
+	return c != "." && c == comm(os.Getpid())
 }
 
 // StartIssueSession runs `gai issue <url>` in the issue's tmux session in
@@ -655,7 +681,7 @@ func StartIssueSession(dir string, issue Issue) (string, error) {
 	width, height := "200", "50"
 	if exec.Command("tmux", "has-session", "-t", "="+name).Run() == nil {
 		out, _ := exec.Command("tmux", "show-options", "-v", "-t", name, queuedOption).Output()
-		if strings.TrimSpace(string(out)) != "1" {
+		if strings.TrimSpace(string(out)) == "" {
 			return name, nil // already running
 		}
 		// Replace the queued session with a new one. Not respawn-pane: on macOS
