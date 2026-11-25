@@ -421,6 +421,12 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Guard:** `TestPickerOnHoldBelow`, `TestPickerSkipMovesBelowOnLeave`, `TestPickerOnHoldLastRowVisible`.
 - **Found on the way:** the list saved on disk lost the video and research marks, so right after a cs restart the picker ticked those issues, and the ticks stayed when the fresh list came. Now saved (`cachedIssue`, `app/issues.go`). Guard: `TestIssueCacheKeepsOnHold`.
 
+### Waiting issue tiles vanished for a minute (2026-11-25)
+- **Saw:** 6 issues picked at once in practice-stack; 17s later 5 tiles disappeared. They came back one at a time as each issue started.
+- **Cause:** a code edit rebuilt cs, the background runner restarted on the new build, and its start-up cleanup (`CloseStaleQueuedIssues`) closed every "queued" tile, also the window's, whose queue was still intact. No work lost: a queued tile has no Claude yet.
+- **Fix:** a queued tile carries the pid of the cs that queued it (`@cs_queued`); the cleanup closes only tiles whose cs no longer runs (`queueOwnerRuns`, `session/issues.go`).
+- **Guard:** `TestCloseStaleQueuedKeepsLiveOwners`.
+
 ### Issue picker didn't say who asked for an issue (2026-11-25)
 - **Saw:** customers' issues were mixed with the user's own and automatic ones; no name, no filter.
 - **Fix:** every row shows the person, read from the body's "Reported by" line (GitHub's author is Glitchgrab's app). Issues from anyone but you (git `user.name`) come first, then your own and nameless ones; the background runner starts them in the same order (`ByPriority`). `f` lists the people: enter shows only theirs, space ticks several, `p` pins someone above everyone (saved per project in `.prefs.json`; the filter isn't saved). Files: `session/reporter.go`, `ui/issuepeople.go`, `ui/issuepicker.go`, `app/issuesdaemon.go`.
