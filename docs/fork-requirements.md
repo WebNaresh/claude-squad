@@ -82,7 +82,7 @@ Source: the user's own description of their workflow (2026-10-01).
 - Open item: `gai issue` asks questions when it has a TTY. Background mode needs it to run unattended (check its flags, e.g. `--yes`, before adding new ones in gai).
 
 ### 3b. Issues → sessions (⌥N) — done
-- ⌥N opens a picker (`ui/issuepicker.go`, `app/issues.go`): choose the project (←/→), see its open issues oldest first via `gh issue list`, the 5 oldest without a session pre-ticked; space ticks/unticks, Enter starts.
+- ⌥N opens a picker (`ui/issuepicker.go`, `app/issues.go`): choose the project (←/→), see its open issues oldest first via `gh issue list`, skipped, waiting and already-running ones below an "On hold" line (tab jumps there), other people's before your own (f filters by person, p pins one first), the 5 oldest without a session pre-ticked; space ticks/unticks, Enter starts.
 - Each picked issue gets its own tmux session `cc_<folder>_i<number>` running `gai issue <url>`. They start one after another (each gai rewrites the one open PR; together they would race). cs answers gai's [Y/n] questions with Enter (default Yes; user's choice 2026-10-01) and moves to the next issue once Claude is running there (seen in `claude agents`), or after 5 minutes.
 - Tested with fake `gh`/`gai` on PATH only; never run against real GitHub in tests (gai creates/updates PRs).
 
