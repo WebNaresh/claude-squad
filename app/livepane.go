@@ -68,6 +68,16 @@ func init() {
 		// (every build) a pane can still be scrolled back with nobody knowing;
 		// keys then went to copy mode, not Claude ("t"/"g" even failed).
 		modeChecked := map[string]time.Time{}
+		checkMode := func(target string) {
+			if scrolled[target] || time.Since(modeChecked[target]) <= 2*time.Second {
+				return
+			}
+			modeChecked[target] = time.Now()
+			if out, err := exec.Command("tmux", "display-message", "-p", "-t", target, "#{pane_in_mode}").Output(); err == nil && strings.TrimSpace(string(out)) == "1" {
+				logEvent("typing into %s: it was still scrolled back, returning it to live", target)
+				scrolled[target] = true
+			}
+		}
 		var lastWheel time.Time // when the last wheel burst was seen
 		var pending *queuedKey
 		next := func() (queuedKey, bool) {
@@ -84,10 +94,12 @@ func init() {
 			if !ok {
 				return
 			}
-			// A pane that may be scrolled back goes the usual way below, which
-			// brings it back to live first; so a hold's first space does too.
-			if k.msg.Type == tea.KeySpace && k.wheel == 0 && !k.msg.Alt &&
-				!scrolled[k.target] && time.Since(modeChecked[k.target]) < 2*time.Second {
+			if k.msg.Type == tea.KeySpace && k.wheel == 0 && !k.msg.Alt {
+				checkMode(k.target)
+			}
+			// A pane that is scrolled back goes the usual way below, which
+			// brings it back to live first.
+			if k.msg.Type == tea.KeySpace && k.wheel == 0 && !k.msg.Alt && !scrolled[k.target] {
 				if rest, done := holdSpace(k, keyQueue, realHold); done {
 					pending = rest
 					continue
@@ -167,13 +179,7 @@ func init() {
 					}
 				}
 			}
-			if !scrolled[k.target] && time.Since(modeChecked[k.target]) > 2*time.Second {
-				modeChecked[k.target] = time.Now()
-				if out, err := exec.Command("tmux", "display-message", "-p", "-t", k.target, "#{pane_in_mode}").Output(); err == nil && strings.TrimSpace(string(out)) == "1" {
-					logEvent("typing into %s: it was still scrolled back, returning it to live", k.target)
-					scrolled[k.target] = true
-				}
-			}
+			checkMode(k.target)
 			if scrolled[k.target] {
 				// Leave scroll-back before typing, so the key reaches Claude.
 				_ = exec.Command("tmux", "send-keys", "-t", k.target, "-X", "cancel").Run()
