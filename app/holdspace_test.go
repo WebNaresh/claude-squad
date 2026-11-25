@@ -2,125 +2,120 @@ package app
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// feed plays key gaps (ms) into holdSpace and returns what was sent, in order,
-// and the key handed back. Gaps are real time, so the cases stay short.
-func feed(t *testing.T, gaps []int, then string) (sent []string, rest *queuedKey) {
+// hold plays a Space press: the key is physically down for downFor; spaces
+// arrive at the given times (ms after the press), then another key if any.
+func hold(t *testing.T, downFor time.Duration, arrive []int, other string, otherAt int) (sent []string, at []time.Duration, rest *queuedKey) {
 	t.Helper()
 	keys := make(chan queuedKey, 100)
-	space := func() queuedKey {
-		return queuedKey{target: "cc_x", msg: tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}}, at: time.Now()}
+	start := time.Now()
+	for _, ms := range arrive {
+		time.AfterFunc(time.Duration(ms)*time.Millisecond, func() {
+			keys <- queuedKey{target: "cc_x", msg: tea.KeyMsg{Type: tea.KeySpace}, at: time.Now()}
+		})
 	}
-	first := space()
-	go func() {
-		for _, g := range gaps {
-			time.Sleep(time.Duration(g) * time.Millisecond)
-			keys <- space()
-		}
-		if then != "" {
-			time.Sleep(30 * time.Millisecond)
-			keys <- queuedKey{target: "cc_x", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(then)}, at: time.Now()}
-		}
-	}()
-	io := holdIO{
+	if other != "" {
+		time.AfterFunc(time.Duration(otherAt)*time.Millisecond, func() {
+			keys <- queuedKey{target: "cc_x", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(other)}, at: time.Now()}
+		})
+	}
+	var mu sync.Mutex
+	rest, done := holdSpace(queuedKey{target: "cc_x", msg: tea.KeyMsg{Type: tea.KeySpace}, at: start}, keys, holdIO{
 		enabled: func(string) bool { return true },
+		down:    func() bool { return time.Since(start) < downFor },
 		send: func(_, s string) {
-			if s != "" {
-				sent = append(sent, s)
-			}
+			mu.Lock()
+			defer mu.Unlock()
+			sent, at = append(sent, s), append(at, time.Since(start))
 		},
 		log: func(string, ...any) {},
-	}
-	rest, done := holdSpace(first, keys, io)
+	})
 	if !done {
 		t.Fatal("not handled")
 	}
-	return sent, rest
+	return sent, at, rest
 }
 
-func held(sent []string) bool {
-	for _, s := range sent {
-		if len(s) == claudeHold {
-			return true
-		}
-	}
-	return false
-}
-
-// The recorded gaps of holds that typed spaces (keys.log, 2026-11-25).
-func TestHoldSpaceLateRepeats(t *testing.T) {
-	for _, gaps := range [][]int{
-		{500, 83, 83, 83},           // a calm Mac
-		{444, 76, 97, 76, 360, 309}, // late repeats after the start
-		{309, 33, 75, 82},
-		{48, 22, 20, 300, 195},
+// Held 2s while the Terminal delivers what it did on 2026-11-25 (bunches, then
+// up to 970ms of nothing), or nothing at all: Claude gets 5 at once, then never
+// a gap over its 120ms until the key is up, and nothing after.
+func TestHoldSpaceWhateverArrives(t *testing.T) {
+	for _, arrive := range [][]int{
+		{500, 583, 666, 749, 832, 915},          // a calm Mac
+		{500, 514, 525, 1230, 1235, 2150, 2300}, // bunches; two late after release
+		{},
 	} {
-		sent, _ := feed(t, gaps, "")
-		if !held(sent) {
-			t.Errorf("%v: not seen as held: %q", gaps, sent)
-			continue
+		sent, at, rest := hold(t, 2*time.Second, arrive, "", 0)
+		if rest != nil || sent[0] != " " || len(sent[1]) != claudeHold {
+			t.Fatalf("%v: rest %v, sent %q…", arrive, rest, sent[:2])
 		}
-		// Before the 5 in one piece only the first space: nothing typed late.
-		if sent[0] != " " || len(sent[1]) != claudeHold {
-			t.Errorf("%v: sent %q first", gaps, sent[:2])
-		}
-	}
-}
-
-// Through a gap of 360ms Claude gets a beat all along, so it keeps listening.
-func TestHoldSpaceBridgesGaps(t *testing.T) {
-	sent, _ := feed(t, []int{300, 80, 80, 360, 360}, "")
-	beats := 0
-	for _, s := range sent[2:] {
-		if s == " " {
-			beats++
-		}
-	}
-	if beats < 15 {
-		t.Fatalf("only %d beats over 720ms + release", beats)
-	}
-}
-
-// Taps are typed, exactly as many as pressed, and never start listening.
-func TestHoldSpaceTapsAreTyped(t *testing.T) {
-	for _, gaps := range [][]int{{}, {150}, {160, 150}, {140, 130, 150}, {140, 90, 150, 140}} {
-		sent, _ := feed(t, gaps, "")
-		typed := len(strings.Join(sent, ""))
-		// A run that ended early leaves the rest in the queue for the next call.
-		if held(sent) || typed < 1 || typed > len(gaps)+1 || len(gaps) < 4 && typed != len(gaps)+1 {
-			t.Errorf("%v: sent %q", gaps, sent)
-		}
-		for _, s := range sent {
-			if len(s) >= claudeHold {
-				t.Errorf("%v: %d spaces at once would start Claude listening", gaps, len(s))
+		for i := 2; i < len(sent); i++ {
+			if gap := at[i] - at[i-1]; sent[i] != " " || gap > 120*time.Millisecond {
+				t.Errorf("%v: %q after %s", arrive, sent[i], gap)
 			}
 		}
+		if last := at[len(at)-1]; last < 1850*time.Millisecond || last > 2100*time.Millisecond {
+			t.Errorf("%v: last beat at %s, key up at 2s", arrive, last)
+		}
 	}
 }
 
-// A letter after a space is not delayed, and comes back to the caller.
-func TestHoldSpaceThenLetter(t *testing.T) {
-	start := time.Now()
-	sent, rest := feed(t, nil, "a")
-	if rest == nil || string(rest.msg.Runes) != "a" || len(sent) != 1 {
+// A tap is one space, at once, with no waiting around.
+func TestHoldSpaceTap(t *testing.T) {
+	for _, d := range []time.Duration{0, 90 * time.Millisecond, 165 * time.Millisecond} {
+		start := time.Now()
+		sent, at, rest := hold(t, d, nil, "", 0)
+		if strings.Join(sent, "") != " " || rest != nil || at[0] > 20*time.Millisecond {
+			t.Fatalf("%s: sent %q", d, sent)
+		}
+		if took := time.Since(start); took > d+80*time.Millisecond {
+			t.Fatalf("%s: took %s", d, took)
+		}
+	}
+}
+
+// The next letter (Space still down when fast typing) or second tap is handed
+// back at once.
+func TestHoldSpaceTypingGoesOn(t *testing.T) {
+	sent, _, rest := hold(t, 150*time.Millisecond, nil, "a", 60)
+	if strings.Join(sent, "") != " " || rest == nil || string(rest.msg.Runes) != "a" {
 		t.Fatalf("sent %q, rest %v", sent, rest)
 	}
-	if d := time.Since(start); d > 150*time.Millisecond {
-		t.Fatalf("took %s", d)
+	sent, _, rest = hold(t, 150*time.Millisecond, []int{60}, "", 0)
+	if strings.Join(sent, "") != " " || rest == nil || rest.msg.Type != tea.KeySpace {
+		t.Fatalf("second space: sent %q, rest %v", sent, rest)
 	}
-	sent, rest = feed(t, []int{150}, "b") // "  b"
-	if rest == nil || strings.Join(sent, "") != "  " {
+}
+
+// Another key ends the hold and is handed back.
+func TestHoldSpaceOtherKeyEndsIt(t *testing.T) {
+	sent, _, rest := hold(t, 3*time.Second, nil, "x", 800)
+	if rest == nil || string(rest.msg.Runes) != "x" || len(sent) < 5 || len(sent[1]) != claudeHold {
 		t.Fatalf("sent %q, rest %v", sent, rest)
 	}
-	// Enter right after the hold stops it.
-	sent, rest = feed(t, []int{300, 80, 80, 80}, "x")
-	if !held(sent) || rest == nil {
-		t.Fatalf("sent %q, rest %v", sent, rest)
+}
+
+// A press that waited in a busy cs: the key is up by now, so it was a tap; or
+// still down, so it is a hold straight away.
+func TestHoldSpaceOldPress(t *testing.T) {
+	for _, down := range []bool{false, true} {
+		var sent []string
+		until := time.Now().Add(200 * time.Millisecond)
+		holdSpace(queuedKey{target: "cc_x", msg: tea.KeyMsg{Type: tea.KeySpace}, at: time.Now().Add(-time.Second)}, make(chan queuedKey), holdIO{
+			enabled: func(string) bool { return true },
+			down:    func() bool { return down && time.Now().Before(until) },
+			send:    func(_, s string) { sent = append(sent, s) },
+			log:     func(string, ...any) {},
+		})
+		if isHold := len(sent) > 1 && len(sent[1]) == claudeHold; isHold != down {
+			t.Fatalf("down=%v: sent %q", down, sent)
+		}
 	}
 }
 
@@ -131,5 +126,21 @@ func TestHoldSpaceOffWhenVoiceOff(t *testing.T) {
 	}
 	if realHold.enabled("csterm_x") {
 		t.Fatal("on in a terminal tile")
+	}
+}
+
+// A key-up that macOS never reports doesn't type spaces for ever.
+func TestHoldSpaceStuckKey(t *testing.T) {
+	var sent []string
+	start := time.Now()
+	holdSpace(queuedKey{target: "cc_x", msg: tea.KeyMsg{Type: tea.KeySpace}, at: start}, make(chan queuedKey), holdIO{
+		enabled: func(string) bool { return true },
+		down:    func() bool { return true },
+		max:     300 * time.Millisecond,
+		send:    func(_, s string) { sent = append(sent, s) },
+		log:     func(string, ...any) {},
+	})
+	if took := time.Since(start); took > 2*time.Second || len(sent) > 12 {
+		t.Fatalf("took %s, sent %d", took, len(sent))
 	}
 }
