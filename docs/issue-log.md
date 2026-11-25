@@ -428,6 +428,12 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Guard:** `TestPickerOnHoldBelow`, `TestPickerSkipMovesBelowOnLeave`, `TestPickerOnHoldLastRowVisible`.
 - **Found on the way:** the list saved on disk lost the video and research marks, so right after a cs restart the picker ticked those issues, and the ticks stayed when the fresh list came. Now saved (`cachedIssue`, `app/issues.go`). Guard: `TestIssueCacheKeepsOnHold`.
 
+### Holding Space typed spaces instead of listening (2026-11-25)
+- **Saw:** holding Space for Claude's hold-to-talk sometimes only added spaces to the prompt (`[Image #3] [Image #4]` and a long blank run in practice-stack #3531).
+- **Cause:** Claude (2.1.332) listens after 5 spaces with no gap over 120ms. macOS repeats every ~83ms; with the Mac busy (CPU 70%+, swap full) the repeats reached cs 145-560ms apart (keys.log: `queue` gaps, before cs did anything), so the count kept starting over and the spaces were typed.
+- **Fix:** `app/holdspace.go`: cs recognises the hold itself from the short gaps, sends Claude the 5 spaces in one piece, then its own repeat every 50ms until no repeat came for 450ms. Taps are typed as pressed. Only in `cc_` tiles and with `voice.mode: hold` in Claude's settings. keys.log stage `hold`, activity.log "space held in …".
+- **Guard:** `app/holdspace_test.go` (the recorded gaps). If it comes back after a Claude update, read its limits again (`_t=120`, `Un=5` near "voice:pushToTalk" in the binary).
+
 ### Push refused, no way on (2026-11-25)
 - **Saw:** bar showed `↓0 ↑15`; pushing said only "See the 'Note about fast-forwards'", every time.
 - **Cause:** a teammate had pushed 2 commits. The `↓` count is as old as the last fetch, the message was git's last line (a hint), and `↓` pulls fast-forward only, which a branch with commits on both sides refuses.
