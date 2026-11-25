@@ -84,6 +84,15 @@ func init() {
 			if !ok {
 				return
 			}
+			// A pane that may be scrolled back goes the usual way below, which
+			// brings it back to live first; so a hold's first space does too.
+			if k.msg.Type == tea.KeySpace && k.wheel == 0 && !k.msg.Alt &&
+				!scrolled[k.target] && time.Since(modeChecked[k.target]) < 2*time.Second {
+				if rest, done := holdSpace(k, keyQueue, realHold); done {
+					pending = rest
+					continue
+				}
+			}
 			dir := k.msg.String()
 			if k.wheel > 0 {
 				// Real wheel events: add up the ones already waiting for the same
