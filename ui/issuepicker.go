@@ -56,10 +56,18 @@ type IssuePicker struct {
 	Limit, LimitAll   int
 	LimitOwn, EditAll bool
 	selected          map[int]bool
-	cursor            int
-	scroll            int // preview scroll offset
-	width             int
-	height            int
+	// Me and Pinned decide whose issues come first (session.Issue.Priority);
+	// the caller saves Pinned.
+	Me     string
+	Pinned []string
+	all    []session.Issue // every listed issue; issues is all, or only the people picked
+	taken  []session.Issue // the ones hidden because a PR has them
+	people peopleList
+	groups map[int]int // each issue's group when the list was last arranged
+	cursor int
+	scroll int // preview scroll offset
+	width  int
+	height int
 }
 
 // NewIssuePicker opens the picker for a project while its issues load.
@@ -78,7 +86,7 @@ func (p *IssuePicker) SetSkipped(skipped map[int]bool) {
 // drop out of the list.
 func (p *IssuePicker) Skipped() []int {
 	var out []int
-	for _, is := range p.issues {
+	for _, is := range p.all {
 		if p.skipped[is.Number] {
 			out = append(out, is.Number)
 		}
@@ -90,22 +98,18 @@ func (p *IssuePicker) Skipped() []int {
 // already closes. The first list ticks the first IssuePickDefault (in list
 // order) that don't have a session and weren't skipped; a refresh of the list keeps the ticks and the cursor.
 func (p *IssuePicker) SetIssues(issues []session.Issue, busy map[int]bool, err error) {
-	refresh := p.issues != nil
+	refresh := p.all != nil
 	var cur int
 	if refresh && p.cursor < len(p.issues) {
 		cur = p.issues[p.cursor].Number
 	}
-	var shown []session.Issue
-	p.inPR = 0
+	var shown, taken []session.Issue
 	for _, is := range issues { // issues come oldest first
 		if is.PR > 0 {
-			p.inPR++
+			taken = append(taken, is)
 			continue
 		}
 		shown = append(shown, is)
-	}
-	if p.NewestFirst {
-		slices.Reverse(shown)
 	}
 	if err != nil && refresh {
 		// Keep showing the last list; just say the refresh failed.
@@ -114,7 +118,7 @@ func (p *IssuePicker) SetIssues(issues []session.Issue, busy map[int]bool, err e
 	}
 	if refresh && p.stale && err == nil {
 		was := map[int]bool{}
-		for _, is := range p.issues {
+		for _, is := range p.all {
 			was[is.Number] = true
 		}
 		added := 0
@@ -128,11 +132,21 @@ func (p *IssuePicker) SetIssues(issues []session.Issue, busy map[int]bool, err e
 			p.refreshed += fmt.Sprintf(", %d new", added)
 		}
 	}
-	p.issues, p.busy, p.Err, p.Loading, p.stale = shown, busy, err, false, false
+	next, _ := p.moved()
+	p.all, p.taken, p.inPR = shown, taken, len(taken)
+	p.busy, p.Err, p.Loading, p.stale = busy, err, false, false
+	p.issues = p.only(shown)
+	p.arrange()
+	if p.people.open {
+		p.reloadPeople() // a load that ended while the people list is open
+	}
 	if refresh {
+		if next != 0 {
+			cur = next // the cursor's own row changed group: don't follow it there
+		}
 		keep := map[int]bool{}
 		p.cursor = 0
-		for i, is := range shown {
+		for i, is := range p.issues {
 			if p.selected[is.Number] && !busy[is.Number] {
 				keep[is.Number] = true
 			}
@@ -170,11 +184,134 @@ func (p *IssuePicker) tickFirst(limit int) {
 	}
 }
 
+// Groups of the list, in the order they show. The first three are ready:
+// pinned people's, other people's, then your own and nobody's (as in
+// session.Issue.Priority). Only those can be started by auto or the digits;
+// the rest used to fill the top of the list, because old issues are the ones
+// that get skipped.
+const (
+	groupPinned = session.PriorityPinned
+	groupPeople = session.PriorityPeople
+	groupRest   = session.PriorityRest
+	groupReady  = groupRest // up to here
+	groupBusy   = iota - 1
+	groupWaits
+	groupSkipped
+)
+
+func (p *IssuePicker) group(is session.Issue) int {
+	switch {
+	case p.busy[is.Number]:
+		return groupBusy
+	case p.skipped[is.Number]:
+		return groupSkipped
+	case is.Waits():
+		return groupWaits
+	}
+	return is.Priority(p.Me, p.Pinned)
+}
+
+// arrange orders the list: ready issues first, then the ones on hold, each
+// group by age.
+func (p *IssuePicker) arrange() {
+	slices.SortStableFunc(p.issues, func(a, b session.Issue) int {
+		if c := p.group(a) - p.group(b); c != 0 {
+			return c
+		}
+		if c := a.Priority(p.Me, p.Pinned) - b.Priority(p.Me, p.Pinned); c != 0 {
+			return c // on hold
+		}
+		c := a.CreatedAt.Compare(b.CreatedAt)
+		if c == 0 {
+			c = a.Number - b.Number
+		}
+		if p.NewestFirst {
+			c = -c
+		}
+		return c
+	})
+	p.groups = map[int]int{}
+	for _, is := range p.issues {
+		p.groups[is.Number] = p.group(is)
+	}
+}
+
+// readyCount is how many rows are above the on-hold line.
+func (p *IssuePicker) readyCount() int {
+	n := 0
+	for _, is := range p.issues {
+		if p.groups[is.Number] <= groupReady {
+			n++
+		}
+	}
+	return n
+}
+
+// moved reports whether x or space changed the group of the cursor's issue
+// since the list was arranged, and the issue the cursor goes to when that row
+// moves away (0: none).
+func (p *IssuePicker) moved() (next int, ok bool) {
+	if p.cursor >= len(p.issues) {
+		return 0, false
+	}
+	is := p.issues[p.cursor]
+	if p.groups[is.Number] == p.group(is) {
+		return 0, false
+	}
+	switch {
+	case p.cursor+1 < len(p.issues):
+		next = p.issues[p.cursor+1].Number
+	case p.cursor > 0:
+		next = p.issues[p.cursor-1].Number
+	}
+	return next, true
+}
+
+// moveTo puts the cursor on row i. A row skipped or un-skipped with x stays
+// under the cursor, so x again takes it back, and goes to its group here,
+// once the cursor leaves it.
+func (p *IssuePicker) moveTo(i int) {
+	if i < 0 || i >= len(p.issues) || i == p.cursor {
+		return
+	}
+	target := p.issues[i].Number
+	if _, ok := p.moved(); ok {
+		p.arrange()
+	}
+	p.cursor = max(0, slices.IndexFunc(p.issues, func(is session.Issue) bool { return is.Number == target }))
+	p.scroll = 0
+}
+
+// holdLine heads the issues on hold: how many, why, and the key to get there.
+func (p *IssuePicker) holdLine(width int) string {
+	var n [groupSkipped + 1]int
+	for _, is := range p.issues {
+		n[p.group(is)]++
+	}
+	var parts []string
+	for _, g := range []struct {
+		group int
+		what  string
+	}{{groupBusy, "with a session"}, {groupWaits, "waiting"}, {groupSkipped, "skipped"}} {
+		if n[g.group] > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n[g.group], g.what))
+		}
+	}
+	return ruleLine("On hold: "+strings.Join(parts, " · "), width)
+}
+
+// ruleLine is a heading row inside the list.
+func ruleLine(text string, width int) string {
+	line := "── " + text + " "
+	line = runewidth.Truncate(line, width, "…")
+	return line + strings.Repeat("─", max(0, width-runewidth.StringWidth(line)))
+}
+
 // ToggleOrder switches between oldest and newest first, moving to the top
 // and ticking the first issues of the new order.
 func (p *IssuePicker) ToggleOrder() {
 	p.NewestFirst = !p.NewestFirst
-	slices.Reverse(p.issues)
+	p.arrange()
 	p.cursor = 0
 	p.selected = map[int]bool{}
 	p.tickDefault()
@@ -216,16 +353,21 @@ func (p *IssuePicker) Current() (session.Issue, bool) {
 // HandleKey processes a key; it returns done (close the picker) and start
 // (start sessions for Selected()).
 func (p *IssuePicker) HandleKey(key string) (done, start bool) {
+	if p.people.open {
+		p.peopleKey(key)
+		return false, false
+	}
 	switch key {
 	case "up", "k":
-		if p.cursor > 0 {
-			p.cursor--
-			p.scroll = 0
-		}
+		p.moveTo(p.cursor - 1)
 	case "down", "j":
-		if p.cursor < len(p.issues)-1 {
-			p.cursor++
-			p.scroll = 0
+		p.moveTo(p.cursor + 1)
+	case "tab":
+		// To the first issue on hold, and back to the top.
+		if p.cursor < p.readyCount() {
+			p.moveTo(p.readyCount())
+		} else {
+			p.moveTo(0)
 		}
 	case "pgdown", "shift+down", "J":
 		p.scroll += 5
@@ -262,6 +404,10 @@ func (p *IssuePicker) HandleKey(key string) (done, start bool) {
 		// Start exactly N: tick the first N in list order, nothing else.
 		p.selected = map[int]bool{}
 		p.tickFirst(int(key[0] - '0'))
+	case "f":
+		if !p.Loading && p.Err == nil {
+			p.openPeople()
+		}
 	case "enter":
 		return true, len(p.Selected()) > 0
 	case "esc", "q", "ctrl+c":
@@ -288,13 +434,31 @@ func (p *IssuePicker) Render() string {
 	if p.NewestFirst {
 		order, other = other, order
 	}
+	// tab's key sits here, not in the key row, which is cut at the right.
+	if hold := len(p.issues) - p.readyCount(); hold > 0 {
+		where := "on hold"
+		if p.cursor >= p.readyCount() {
+			where = "back to top"
+		}
+		order += fmt.Sprintf(" · %d ready · %d on hold · tab: %s", len(p.issues)-hold, hold, where)
+		order = runewidth.Truncate(order, max(0, w-4-len("Start Claude on issues   project: ‹  ›   ")-runewidth.StringWidth(p.Name)), "…")
+	}
 	b.WriteString(ipTitleStyle.Render("Start Claude on issues") + "   project: " + ipTitleStyle.Render("‹ "+p.Name+" ›") + "   " + ipDimStyle.Render(order) + "\n")
-	b.WriteString(KeyRow("", []Key{{"enter", "start"}, {"esc", "cancel"}, {"space", "tick"}, {"x", "skip"}, {"r", "refresh"}, {"1-9", "tick first N"}, {"↑↓", "move"},
-		{"s", other}, {"←→", "project"}, {"o", "open"}, {"a", autoLabel(p.AutoOn)}, {"J/K", "scroll"}}, w-4) + "\n")
-	// Its keys sit on this line: at the end of the row above they'd be the
-	// first to fall behind its "…".
-	limit := p.limitLine()
-	b.WriteString(limit + "   " + KeyRow("", []Key{{"+/-", "change"}, {"g", limitScopeLabel(p.EditAll)}}, max(0, w-4-lipgloss.Width(limit))) + "\n")
+	if p.people.open {
+		b.WriteString(KeyRow("", []Key{{"enter", "show only"}, {"space", "tick several"}, {"p", "pin (always first)"}, {"esc", "back"}}, w-4) + "\n")
+		b.WriteString(p.limitLine() + "\n")
+	} else {
+		b.WriteString(KeyRow("", []Key{{"enter", "start"}, {"esc", "cancel"}, {"space", "tick"}, {"x", "skip"}, {"r", "refresh"}, {"1-9", "tick first N"}, {"↑↓", "move"},
+			{"s", other}, {"←→", "project"}, {"o", "open"}, {"a", autoLabel(p.AutoOn)}, {"J/K", "scroll"}}, w-4) + "\n")
+		// Its keys sit on this line: at the end of the row above they'd be the
+		// first to fall behind its "…".
+		limit := p.limitLine()
+		// In a very narrow window there is no room beside it, not even for "…".
+		if rest := w - 4 - lipgloss.Width(limit) - 3; rest > 0 {
+			limit += "   " + KeyRow("", []Key{{"f", p.peopleLabel()}, {"+/-", "change"}, {"g", limitScopeLabel(p.EditAll)}}, rest)
+		}
+		b.WriteString(limit + "\n")
+	}
 	if p.Auto != "" {
 		b.WriteString(ipTitleStyle.Render("⟳ Auto: ") + p.Auto + "\n")
 	}
@@ -317,8 +481,13 @@ func (p *IssuePicker) Render() string {
 		b.WriteString(p.Err.Error())
 		return fixed(b.String())
 	}
+	if p.people.open {
+		return fixed(b.String() + p.renderPeople(w-4, avail))
+	}
 	if len(p.issues) == 0 {
-		if p.inPR > 0 {
+		if p.filtered() {
+			b.WriteString(p.noneFrom())
+		} else if p.inPR > 0 {
 			b.WriteString(fmt.Sprintf("No open issues left: the other %d are already in a PR (open or merged).", p.inPR))
 		} else {
 			b.WriteString("No open issues.")
@@ -329,11 +498,46 @@ func (p *IssuePicker) Render() string {
 	// the 3 header and 2 footer rows and a little margin. The list takes about
 	// 40% and the highlighted issue's text the rest.
 	room := max(5, avail*2/5) // list rows; fixed, so the picker keeps its height
-	start := 0
-	if p.cursor >= room {
-		start = p.cursor - room + 1
+	// Heading lines are rows of their own: before your own issues (when other
+	// people's are above them) and before the ones on hold.
+	ready := p.readyCount()
+	asked := 0
+	for asked < ready && p.groups[p.issues[asked].Number] < groupRest {
+		asked++
 	}
-	for i := start; i < len(p.issues) && i < start+room; i++ {
+	const restRow, holdRow = -1, -2
+	var list []int // an issue's index, or a heading
+	cursorRow, holdAt := 0, 0
+	for i := range p.issues {
+		if i == asked && asked > 0 && asked < ready {
+			list = append(list, restRow)
+		}
+		if i == ready {
+			holdAt = len(list)
+			list = append(list, holdRow)
+		}
+		if i == p.cursor {
+			cursorRow = len(list)
+		}
+		list = append(list, i)
+	}
+	rows := len(list)
+	start := max(0, cursorRow-room+1)
+	if p.cursor >= ready {
+		// On hold: show as many of them as fit, not just the first.
+		start = max(start, min(holdAt, rows-room))
+	}
+	nameW := p.nameWidth(w)
+	for row := start; row < rows && row < start+room; row++ {
+		i := list[row]
+		switch i {
+		case restRow:
+			b.WriteString(ipDimStyle.Render(ruleLine(fmt.Sprintf("Your own, or no name: %d", ready-asked), w-4)) + "\n")
+			continue
+		case holdRow:
+			b.WriteString(ipDimStyle.Render(p.holdLine(w-4)) + "\n")
+			continue
+		}
 		is := p.issues[i]
 		box := "[ ]"
 		switch {
@@ -354,7 +558,7 @@ func (p *IssuePicker) Render() string {
 		case is.QAFailed:
 			title = "(failed testing, again) " + title
 		}
-		line := fmt.Sprintf("%s #%-5d %s", box, is.Number, title)
+		line := fmt.Sprintf("%s #%-5d %s%s", box, is.Number, p.nameCell(is, nameW), title)
 		line = runewidth.Truncate(line, w-8, "…")
 		line += strings.Repeat(" ", max(1, w-4-runewidth.StringWidth(line)-len(age))) + age
 		if p.busy[is.Number] || p.skipped[is.Number] || is.Waits() {
@@ -367,7 +571,7 @@ func (p *IssuePicker) Render() string {
 		}
 		b.WriteString(line + "\n")
 	}
-	for i := len(p.issues) - start; i < room; i++ {
+	for i := rows - start; i < room; i++ {
 		b.WriteString("\n") // fewer issues than rows: keep the list's height
 	}
 	b.WriteString(p.renderPreview(w-4, avail-room-1))
@@ -397,7 +601,11 @@ func (p *IssuePicker) renderPreview(width, rows int) string {
 	for _, l := range wrapLines(fmt.Sprintf("#%d %s", is.Number, is.Title), width) {
 		head = append(head, ipTitleStyle.Render(l))
 	}
-	head = append(head, ipDimStyle.Render(runewidth.Truncate(is.URL, width, "…")))
+	by := is.URL
+	if len(is.People) > 0 {
+		by = "by " + strings.Join(is.People, ", ") + " · " + is.URL
+	}
+	head = append(head, ipDimStyle.Render(runewidth.Truncate(by, width, "…")))
 	body := plainMarkdown(is.Body)
 	if body == "" {
 		body = "(no description)"
@@ -500,7 +708,7 @@ func autoLabel(on bool) string {
 
 // Lists reports whether issue n is in the picker's list.
 func (p *IssuePicker) Lists(n int) bool {
-	for _, is := range p.issues {
+	for _, is := range p.all {
 		if is.Number == n {
 			return true
 		}
