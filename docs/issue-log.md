@@ -316,6 +316,13 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 - **Cause:** after the kill, the session list was reloaded (`claude agents`) before the tile went.
 - **Fix:** the tile is dropped at once and kept out for 5s; a capture started before the close is discarded (`app/terminal.go`, `app/app.go`, `app/grid.go`).
 
+### Out of memory with 7 issues open: "Playwright 25.95 GB" (seva_stack_new, 2026-10-30)
+- **Saw:** macOS "out of application memory". Force Quit listed Terminal and four Playwright rows at 25.95 GB each.
+- **Cause:** that is one number, Terminal's whole process tree, shown on every row. Measured with `top` (MEM includes compressed): all Playwright/WebKit about 1 GB; two parallel `tsc --noEmit` 4.4 GB each; `next dev` 4.7 GB and 3.2 GB; swap 7.4 of 9 GB on 16 GB. Each session started its own headless browser, and a Bash timeout left bun + browser running (parent 1), so sessions retried: three copies of `_tmp-817-shot` ran at once, each hitting the same dev server.
+- **Fix:** not in cs. `/shot` uses real Chrome first (`save_to_disk`). Playwright/Cypress and `tsc` go through `~/.claude/scripts/one-at-a-time`: one per kind across sessions, queue, time limit, job killed with its caller.
+- **Guard:** `~/.claude/scripts/one-at-a-time-check.sh`. Nothing blocks a session that skips the wrapper.
+- **Debug next time:** read `top -l 1 -stats pid,command,mem,cmprs -o mem -n 14`, not Force Quit and not `ps` RSS.
+
 ## Background runner
 
 ### Auto pickup started the upstream project's issues in a fork
