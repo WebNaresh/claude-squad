@@ -293,7 +293,8 @@ func RunIssuesDaemon() error {
 			if unclear {
 				n = min(n, 1) // one tile asks; the rest wait for its answer
 			}
-			for _, is := range issues[p] {
+			// The picker's order: what people asked for before your own.
+			for _, is := range session.ByPriority(issues[p], session.Me(p), readPrefs(p).Pinned) {
 				if n == 0 {
 					break
 				}
