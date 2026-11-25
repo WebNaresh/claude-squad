@@ -81,7 +81,8 @@ func (m *home) newIssuePickerTicking(project string, tick int, note string) {
 	showLimits(m.issuePicker)
 	m.issuePicker.SetSize(m.screenWidth, m.screenHeight)
 	m.issuePicker.SetSkipped(readSkipped(project))
-	m.issuePicker.NewestFirst = readPrefs(project).NewestFirst
+	prefs := readPrefs(project)
+	m.issuePicker.NewestFirst, m.issuePicker.Pinned, m.issuePicker.Me = prefs.NewestFirst, prefs.Pinned, session.Me(project)
 	cached, ok := m.issueCache[project]
 	if !ok {
 		cached, ok = readIssueCache(project)
@@ -116,6 +117,7 @@ func readIssueCache(project string) ([]session.Issue, bool) {
 		out[i].PR, out[i].PRBot, out[i].PRMerged, out[i].QAFailed, out[i].WaitsFor = ci.PR, ci.PRBot, ci.PRMerged, ci.QAFailed, ci.WaitsFor
 		out[i].NotBefore, out[i].WaitsRepo = ci.NotBefore, ci.WaitsRepo
 		out[i].GatherPR, out[i].PRUnclear = ci.GatherPR, ci.PRUnclear
+		out[i].Video, out[i].Research = ci.Video, ci.Research
 	}
 	return out, true
 }
@@ -127,7 +129,7 @@ func writeIssueCache(project string, issues []session.Issue) {
 	}
 	c := make([]cachedIssue, len(issues))
 	for i, is := range issues {
-		c[i] = cachedIssue{is, is.PR, is.PRBot, is.PRMerged, is.QAFailed, is.WaitsFor, is.NotBefore, is.WaitsRepo, is.GatherPR, is.PRUnclear}
+		c[i] = cachedIssue{is, is.PR, is.PRBot, is.PRMerged, is.QAFailed, is.WaitsFor, is.NotBefore, is.WaitsRepo, is.GatherPR, is.PRUnclear, is.Video, is.Research}
 	}
 	if data, err := json.Marshal(c); err == nil {
 		_ = os.WriteFile(f, data, 0o644)
@@ -171,6 +173,8 @@ func writeSkipped(project string, nums []int) {
 // issuePrefs is how the picker lists a project's issues, kept per project.
 type issuePrefs struct {
 	NewestFirst bool `json:"newest_first,omitempty"`
+	// Pinned people's issues come first, in the list and for the runner.
+	Pinned []string `json:"pinned,omitempty"`
 }
 
 func prefsFile(project string) string {
@@ -210,6 +214,8 @@ type cachedIssue struct {
 	WaitsRepo string    `json:"waits_repo,omitempty"`
 	GatherPR  int       `json:"gather_pr,omitempty"`
 	PRUnclear bool      `json:"pr_unclear,omitempty"`
+	Video     bool      `json:"video,omitempty"`
+	Research  bool      `json:"research,omitempty"`
 }
 
 // busyIssues returns the issue numbers that already have a session in project.
@@ -234,6 +240,13 @@ func (m *home) busyIssues(project string) map[int]bool {
 // handleIssuePickerKey drives the picker.
 func (m *home) handleIssuePickerKey(msg tea.KeyMsg) tea.Cmd {
 	p := m.issuePicker
+	if p.ChoosingPeople() {
+		p.HandleKey(msg.String())
+		if msg.String() == "p" {
+			writePrefs(p.Project, issuePrefs{NewestFirst: p.NewestFirst, Pinned: p.Pinned})
+		}
+		return nil
+	}
 	switch msg.String() {
 	case "left", "right", "alt+left", "alt+right", "alt+b", "alt+f":
 		projects := m.projectTabs.ShownProjects()
@@ -290,7 +303,7 @@ func (m *home) handleIssuePickerKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	if msg.String() == "s" && !p.Loading {
 		p.ToggleOrder()
-		writePrefs(p.Project, issuePrefs{NewestFirst: p.NewestFirst})
+		writePrefs(p.Project, issuePrefs{NewestFirst: p.NewestFirst, Pinned: p.Pinned})
 		return nil
 	}
 	done, start := p.HandleKey(msg.String())
