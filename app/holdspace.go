@@ -16,29 +16,30 @@ import (
 //
 // A terminal never says a key was released; a held key is only its repeats.
 // Claude (2.1.332) starts listening after 5 spaces with no gap over 120ms, and
-// stops when they end. macOS repeats every ~83ms, so on a busy Mac single
-// gaps reached 300-560ms before cs even got the key: Claude's count started
-// over and every late space was typed into the prompt (keys.log, 2026-11-25).
+// stops 200ms after the last. macOS repeats every ~83ms, but a busy Terminal
+// delivers a few in a bunch and then none for up to a second (keys.log,
+// 2026-11-25): Claude's count started over, and every space was typed. Guessing
+// the hold from such repeats doesn't work (tried: it ended holds mid-sentence).
 //
-// So cs reads the hold itself, allowing for late repeats, and then gives Claude
-// what it needs: the 5 spaces in one piece (it counts them all at once, and
-// takes them out of the prompt again) and a steady beat until the key is let go.
+// So cs asks macOS whether the key is down (spaceDown). Held long enough, it
+// gives Claude the 5 spaces in one piece (it counts them all at once, and takes
+// them and the first one out of the prompt) and a steady beat until the key is
+// really up.
 
 const (
-	// holdFirst: the longest wait before a held key's first repeat.
-	holdFirst = 900 * time.Millisecond
-	// holdDecide: how long repeats are kept back while it isn't clear yet
-	// whether Space is held. Then they are typed: the cost for someone typing
-	// two spaces is this delay on the second one.
-	holdDecide = 200 * time.Millisecond
-	// holdFast, holdFastNeeded: a held key always has gaps this short (late
-	// repeats arrive in bunches); fingers tapping Space don't, twice in a row.
-	holdFast       = 105 * time.Millisecond
-	holdFastNeeded = 2
+	// holdAfter: down this long is a hold. Taps measured 90-165ms; the first
+	// macOS repeat comes after 375ms or more.
+	holdAfter = 300 * time.Millisecond
+	// holdPoll is how often the key is looked at.
+	holdPoll = 15 * time.Millisecond
 	// holdBeat is cs's own repeat, well under Claude's 120ms.
 	holdBeat = 50 * time.Millisecond
-	// holdRelease: no repeat for this long means the key was let go.
-	holdRelease = 450 * time.Millisecond
+	// holdLate: repeats the Terminal still delivers after the key is up are
+	// dropped for this long; they would be typed as spaces.
+	holdLate = 500 * time.Millisecond
+	// holdMax ends a hold whose key-up macOS never reported; without it cs
+	// would type spaces until the next key.
+	holdMax = 5 * time.Minute
 	// claudeHold is how many spaces Claude wants before it listens.
 	claudeHold = 5
 )
@@ -46,8 +47,17 @@ const (
 // holdIO is what holdSpace needs from outside; tests replace it.
 type holdIO struct {
 	enabled func(target string) bool
+	down    func() bool
+	max     time.Duration // 0: holdMax
 	send    func(target, spaces string)
 	log     func(format string, args ...any)
+}
+
+func (io holdIO) maxHold() time.Duration {
+	if io.max > 0 {
+		return io.max
+	}
+	return holdMax
 }
 
 var realHold = holdIO{
@@ -61,7 +71,8 @@ var realHold = holdIO{
 		logKey("hold", target, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(spaces)})
 		_ = exec.Command("tmux", "send-keys", "-t", target, "-l", "--", spaces).Run()
 	},
-	log: logEvent,
+	down: spaceDown,
+	log:  logEvent,
 }
 
 // voiceHold caches the setting: it is asked for on every space typed.
@@ -114,64 +125,69 @@ func holdSpace(k queuedKey, keys <-chan queuedKey, io holdIO) (rest *queuedKey, 
 	if !io.enabled(k.target) {
 		return nil, false
 	}
-	io.send(k.target, " ") // the first one, as ever: no delay on normal typing
+	io.send(k.target, " ") // at once, as ever: no delay on normal typing
 	same := func(n queuedKey) bool {
 		return n.target == k.target && n.wheel == 0 && n.msg.Type == tea.KeySpace && !n.msg.Alt
 	}
-	last, kept, fast := k.at, 0, 0
-	wait := holdFirst
-	for fast < holdFastNeeded {
-		timer := time.NewTimer(wait)
+	poll := time.NewTicker(holdPoll)
+	defer poll.Stop()
+	// The press may be old by now (a busy cs): count from when it arrived.
+	for time.Since(k.at) < holdAfter {
+		if !io.down() {
+			return nil, true // a tap
+		}
 		select {
 		case n, ok := <-keys:
-			timer.Stop()
-			if !ok || !same(n) {
-				io.send(k.target, strings.Repeat(" ", kept))
-				if !ok {
-					return nil, true
-				}
-				return &n, true
-			}
-			if kept > 0 && n.at.Sub(last) <= holdFast {
-				fast++
-			}
-			last = n.at
-			kept++
-			wait = holdDecide
-			// Taps: type them. Never 5 at once, which is what starts Claude
-			// listening. A hold this late is seen by its next repeats.
-			if fast < holdFastNeeded && kept >= claudeHold-2+fast {
-				io.send(k.target, strings.Repeat(" ", kept))
+			if !ok {
 				return nil, true
 			}
-		case <-timer.C:
-			io.send(k.target, strings.Repeat(" ", kept))
-			return nil, true
+			return &n, true // typing goes on
+		case <-poll.C:
 		}
+	}
+	if !io.down() {
+		return nil, true
 	}
 	started := time.Now()
 	io.log("space held in %s: telling Claude", k.target)
 	io.send(k.target, strings.Repeat(" ", claudeHold))
+	letGo := func(why string) {
+		io.log("space let go in %s after %s%s", k.target, time.Since(started).Round(10*time.Millisecond), why)
+	}
 	beat := time.NewTicker(holdBeat)
 	defer beat.Stop()
-	seen := time.Now() // when the last repeat reached us
-	for {
+	for up := false; !up; {
 		select {
 		case n, ok := <-keys:
 			if !ok {
 				return nil, true
 			}
 			if !same(n) {
-				io.log("space let go in %s after %s (another key)", k.target, time.Since(started).Round(10*time.Millisecond))
+				letGo(" (another key)")
 				return &n, true
 			}
-			seen = time.Now()
+			continue // a repeat: cs sends its own
+		case <-poll.C:
+			up = !io.down() || time.Since(started) > io.maxHold()
 		case <-beat.C:
-			if time.Since(seen) > holdRelease {
-				io.log("space let go in %s after %s", k.target, time.Since(started).Round(10*time.Millisecond))
+			io.send(k.target, " ")
+		}
+	}
+	letGo("")
+	late := time.NewTimer(holdLate)
+	defer late.Stop()
+	for {
+		select {
+		case n, ok := <-keys:
+			if !ok {
 				return nil, true
 			}
-			io.send(k.target, " ")
+			// Down again: a new press, not a late repeat.
+			if !same(n) || io.down() {
+				return &n, true
+			}
+		case <-late.C:
+			return nil, true
 		}
 	}
 }
