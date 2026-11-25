@@ -430,9 +430,10 @@ Entry format: what the user saw → cause → fix → guard (test or log line) �
 
 ### Holding Space typed spaces instead of listening (2026-11-25)
 - **Saw:** holding Space for Claude's hold-to-talk sometimes only added spaces to the prompt (`[Image #3] [Image #4]` and a long blank run in practice-stack #3531).
-- **Cause:** Claude (2.1.332) listens after 5 spaces with no gap over 120ms. macOS repeats every ~83ms; with the Mac busy (CPU 70%+, swap full) the repeats reached cs 145-560ms apart (keys.log: `queue` gaps, before cs did anything), so the count kept starting over and the spaces were typed.
-- **Fix:** `app/holdspace.go`: cs recognises the hold itself from the short gaps, sends Claude the 5 spaces in one piece, then its own repeat every 50ms until no repeat came for 450ms. Taps are typed as pressed. Only in `cc_` tiles and with `voice.mode: hold` in Claude's settings. keys.log stage `hold`, activity.log "space held in …".
-- **Guard:** `app/holdspace_test.go` (the recorded gaps). If it comes back after a Claude update, read its limits again (`_t=120`, `Un=5` near "voice:pushToTalk" in the binary).
+- **Cause:** Claude (2.1.332) listens after 5 spaces with no gap over 120ms and stops 200ms after the last. On a busy Mac the Terminal delivers repeats in bunches of 3-5 and then none for 400-970ms (keys.log `queue` gaps).
+- **First fix, worse:** guessing the hold from short gaps and ending it after 450ms without one cut holds to half a second ("No speech detected", #3531 16:44).
+- **Fix:** cs reads the real key state from macOS (`CGEventSourceKeyState`, no permission needed; `app/keydown_darwin.go`). Down for 300ms: Claude gets the 5 spaces in one piece, then a beat every 50ms until the key is up; late repeats are dropped (`app/holdspace.go`). Taps (90-165ms) are typed at once. Only in `cc_` tiles and with `voice.mode: hold`. Over ssh the key reads as up, so spaces go through as without cs. keys.log stage `hold`, activity.log "space held in …".
+- **Guard:** `app/holdspace_test.go`. After a Claude update read its limits again (`_t=120`, `Un=5` near "voice:pushToTalk" in the binary).
 
 ### Push refused, no way on (2026-11-25)
 - **Saw:** bar showed `↓0 ↑15`; pushing said only "See the 'Note about fast-forwards'", every time.
