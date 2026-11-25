@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -157,6 +159,116 @@ func TestPickerLimitLine(t *testing.T) {
 		p.LimitOwn, p.EditAll, p.Limit = c.own, c.all, c.limit
 		if got := ansi.Strip(p.limitLine()); got != "Limit: "+c.want {
 			t.Errorf("own=%v all=%v: %q", c.own, c.all, got)
+		}
+	}
+}
+
+func listed(p *IssuePicker) []int {
+	var out []int
+	for _, is := range p.issues {
+		out = append(out, is.Number)
+	}
+	return out
+}
+
+// Skipped, waiting and running issues go below the ones that can be started,
+// in both orders: practice-stack's 18 old skipped ones filled the top.
+func TestPickerOnHoldBelow(t *testing.T) {
+	issues := []session.Issue{{Number: 1}, {Number: 2, Video: true}, {Number: 3}, {Number: 4}, {Number: 5}, {Number: 6}}
+	p := NewIssuePicker("/p", "p")
+	p.SetSize(120, 50)
+	p.SetSkipped(map[int]bool{1: true, 4: true})
+	p.ShowCached(issues, map[int]bool{3: true})
+	check := func(what string, want ...int) {
+		t.Helper()
+		if got := listed(p); !slices.Equal(got, want) {
+			t.Fatalf("%s: %v, want %v", what, got, want)
+		}
+	}
+	check("oldest first", 5, 6, 3, 2, 1, 4)
+	p.SetIssues(issues, map[int]bool{3: true}, nil)
+	check("refreshed", 5, 6, 3, 2, 1, 4)
+	out := ansi.Strip(p.Render())
+	if !strings.Contains(out, "On hold: 1 with a session · 1 waiting · 2 skipped") {
+		t.Fatalf("no on-hold line:\n%s", out)
+	}
+	p.HandleKey("tab")
+	if is, _ := p.Current(); is.Number != 3 {
+		t.Fatalf("tab went to #%d, want #3", is.Number)
+	}
+	p.HandleKey("tab")
+	if is, _ := p.Current(); is.Number != 5 {
+		t.Fatalf("tab back went to #%d, want #5", is.Number)
+	}
+	p.ToggleOrder()
+	check("newest first", 6, 5, 3, 2, 4, 1)
+}
+
+// x keeps the row under the cursor (x again takes it back); it moves below
+// once the cursor leaves, and the cursor stays among the issues it was in.
+func TestPickerSkipMovesBelowOnLeave(t *testing.T) {
+	p := pickerWith(4)
+	p.HandleKey("x")
+	if is, _ := p.Current(); is.Number != 1 || listed(p)[0] != 1 {
+		t.Fatal("row moved while the cursor was on it")
+	}
+	p.HandleKey("down")
+	if is, _ := p.Current(); is.Number != 2 || !slices.Equal(listed(p), []int{2, 3, 4, 1}) {
+		t.Fatalf("after down: cursor #%d, list %v", is.Number, listed(p))
+	}
+	p.HandleKey("x") // a refresh moves it too, without taking the cursor along
+	p.SetIssues([]session.Issue{{Number: 1}, {Number: 2}, {Number: 3}, {Number: 4}}, map[int]bool{}, nil)
+	if is, _ := p.Current(); is.Number != 3 || !slices.Equal(listed(p), []int{3, 4, 1, 2}) {
+		t.Fatalf("after refresh: cursor #%d, list %v", is.Number, listed(p))
+	}
+	p.HandleKey("tab")
+	p.HandleKey("x") // un-skip #1
+	p.HandleKey("down")
+	if is, _ := p.Current(); is.Number != 2 || !slices.Equal(listed(p), []int{1, 3, 4, 2}) {
+		t.Fatalf("after un-skip: cursor #%d, list %v", is.Number, listed(p))
+	}
+}
+
+// Scrolled to the last row, the on-hold line must not push the cursor's row
+// off the list or change the picker's height.
+func TestPickerOnHoldLastRowVisible(t *testing.T) {
+	p := NewIssuePicker("/p", "p")
+	p.SetSize(120, 50)
+	var issues []session.Issue
+	for i := 1; i <= 40; i++ {
+		issues = append(issues, session.Issue{Number: i, Title: "t"})
+	}
+	p.SetSkipped(map[int]bool{7: true, 8: true})
+	p.SetIssues(issues, map[int]bool{}, nil)
+	h := strings.Count(p.Render(), "\n")
+	for i := 0; i < 40; i++ {
+		p.HandleKey("down")
+		v := ansi.Strip(p.Render())
+		is, _ := p.Current()
+		if got := strings.Count(v, "\n"); got != h {
+			t.Fatalf("row %d: height %d, want %d", i, got, h)
+		}
+		if !strings.Contains(v, fmt.Sprintf("] #%-5d", is.Number)) {
+			t.Fatalf("#%d is under the cursor but not on screen", is.Number)
+		}
+	}
+}
+
+// tab must show the on-hold issues, not only the first of them.
+func TestPickerTabShowsOnHoldRows(t *testing.T) {
+	p := NewIssuePicker("/p", "p")
+	p.SetSize(120, 50)
+	var issues []session.Issue
+	for i := 1; i <= 40; i++ {
+		issues = append(issues, session.Issue{Number: i, Title: "t"})
+	}
+	p.SetSkipped(map[int]bool{1: true, 2: true, 3: true, 4: true})
+	p.SetIssues(issues, map[int]bool{}, nil)
+	p.HandleKey("tab")
+	v := ansi.Strip(p.Render())
+	for _, want := range []string{"On hold: 4 skipped", "] #1 ", "] #4 "} {
+		if !strings.Contains(v, want) {
+			t.Fatalf("after tab, %q is not on screen:\n%s", want, v)
 		}
 	}
 }
