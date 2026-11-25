@@ -65,6 +65,13 @@ type Issue struct {
 	Labels   []struct {
 		Name string `json:"name"`
 	} `json:"labels"`
+	Author struct {
+		Login string `json:"login"`
+		IsBot bool   `json:"is_bot"`
+	} `json:"author"`
+	// People asked for it, the main one first (reporter.go). Not from gh; in
+	// the JSON so cs's saved list keeps it.
+	People []string `json:"people,omitempty"`
 }
 
 // Waits reports whether the issue can't be worked on yet: a follow-up whose
@@ -136,7 +143,7 @@ func ListOpenIssues(dir string) ([]Issue, error) {
 		gather <- prChoice{pr, unclear}
 	}()
 	cmd := GhCmd(dir, "issue", "list", "--state", "open", "--limit", issueListLimit,
-		"--json", "number,title,url,body,createdAt,labels")
+		"--json", "number,title,url,body,createdAt,labels,author")
 	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok && strings.Contains(string(ee.Stderr), "has disabled issues") {
@@ -173,7 +180,10 @@ func ListOpenIssues(dir string) ([]Issue, error) {
 		}
 	}
 	wg.Wait()
+	login, _ := lastLogin.Load().(string)
+	me := Me(dir)
 	for i := range issues {
+		issues[i].setPeople(login, me)
 		// Some titles are pasted with line breaks; one line keeps the list readable.
 		issues[i].Title = strings.Join(strings.Fields(issues[i].Title), " ")
 		issues[i].GatherPR, issues[i].PRUnclear = choice.pr, choice.unclear
